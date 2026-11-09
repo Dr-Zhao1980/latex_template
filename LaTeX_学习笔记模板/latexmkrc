@@ -6,3 +6,14 @@ $aux_dir = 'build';
 $pdf_mode = 5;
 $max_repeat = 10;
 $xelatex = 'xelatex -synctex=1 -interaction=nonstopmode -file-line-error -halt-on-error %O %S';
+
+# BEGIN LATEX_SETUP MANAGED CONFIG
+@default_files = ('main.tex');
+$out_dir = 'build';
+$aux_dir = 'build';
+$out2_dir = '.';
+@out2_exts = ('pdf');
+$pdf_mode = 5;
+$max_repeat = 10;
+$xelatex = 'xelatex -synctex=1 -interaction=nonstopmode -file-line-error -halt-on-error %O %S';
+# END LATEX_SETUP MANAGED CONFIG

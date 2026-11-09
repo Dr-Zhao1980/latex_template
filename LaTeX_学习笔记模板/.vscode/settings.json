@@ -34,7 +34,7 @@
                                        }
                                    ],
     "latex-workshop.latex.build.fromFolder":  "",
-    "latex-workshop.latex.build.enableMagicComments":  true,
+    "latex-workshop.latex.build.enableMagicComments":  false,
     "latex-workshop.latex.rootFile.useSubFile":  false,
     "latex-workshop.latex.autoBuild.run":  "onSave",
     "latex-workshop.latex.autoClean.run":  "never",

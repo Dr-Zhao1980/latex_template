@@ -3,17 +3,24 @@ param(
     [Parameter(Position = 0)][string]$ProjectRoot,
     [string]$MainFile,
     [switch]$CleanOnly,
+    [switch]$ConfigureOnly,
+    [switch]$ProjectOnly,
     [switch]$NoDialog
 )
 
 # Windows PowerShell 5.1 compatible. Accept a project folder or a .tex file.
-# The .bat launcher calls this script so there is only one implementation.
+# The .bat embeds this entire script and can run without a sibling .ps1.
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $script:stage = 'starting'
 $script:project = $null
 $script:mainName = $null
 $script:jobName = $null
+$script:scriptDirectory = $PSScriptRoot
+if ($env:LATEX_SETUP_PAYLOAD_FILE -and $PSCommandPath -ieq $env:LATEX_SETUP_PAYLOAD_FILE -and
+    $env:LATEX_SETUP_ORIGIN) {
+    $script:scriptDirectory = [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($env:LATEX_SETUP_ORIGIN))
+}
 $script:build = $null
 $script:runLog = $null
 $script:latexmk = $null
@@ -127,7 +134,7 @@ function Find-EntryFiles([string]$root) {
 
 function Select-Project {
     if ($MainFile) {
-        $base = if ($ProjectRoot) { $ProjectRoot } else { (Get-Location).Path }
+        $base = if ($ProjectRoot) { $ProjectRoot } else { $script:scriptDirectory }
         $entry = if ([IO.Path]::IsPathRooted($MainFile)) { $MainFile } else {
             Join-Path $base $MainFile
         }
@@ -142,14 +149,9 @@ function Select-Project {
             }
             $roots.Add([IO.Path]::GetFullPath($ProjectRoot))
         } else {
-            # A terminal project takes priority; double-clicking can use the
-            # script folder or its parent (for a separate tools/ folder).
-            $current = (Get-Location).Path
-            if ($current -ne [IO.Path]::GetPathRoot($current)) { $roots.Add($current) }
-            if (-not $roots.Contains($PSScriptRoot)) { $roots.Add($PSScriptRoot) }
-            $parent = [IO.Directory]::GetParent($PSScriptRoot)
-            if ($parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($parent.FullName) -and
-                -not $roots.Contains($parent.FullName)) { $roots.Add($parent.FullName) }
+            # Each standalone script belongs beside its project's root .tex.
+            # The caller's current directory must not redirect cleanup elsewhere.
+            $roots.Add($script:scriptDirectory)
         }
         $candidates = @()
         foreach ($root in $roots) {
@@ -308,8 +310,8 @@ function Check-TeXEnvironment {
     Write-Note ('latexmk version: ' + $versionOutput.Trim())
     $versionMatch = [regex]::Match($versionOutput, 'Version\s+(\d+\.\d+)')
     if ($versionMatch.Success) {
-        $v = [decimal]::Parse($versionMatch.Groups[1].Value, [Globalization.CultureInfo]::InvariantCulture)
-        if ($v -lt [decimal]4.86) {
+        $v = [version]$versionMatch.Groups[1].Value
+        if ($v -lt [version]'4.86') {
             throw 'latexmk is too old for -out2dir. Upgrade latexmk to version 4.86 or newer.'
         }
     } else {
@@ -406,7 +408,7 @@ function New-WorkshopSettings {
         )
         'latex-workshop.latex.tools' = @($tool)
         'latex-workshop.latex.build.fromFolder' = ''
-        'latex-workshop.latex.build.enableMagicComments' = $true
+        'latex-workshop.latex.build.enableMagicComments' = $false
         'latex-workshop.latex.rootFile.useSubFile' = $false
         'latex-workshop.latex.autoBuild.run' = 'onSave'
         'latex-workshop.latex.autoClean.run' = 'never'
@@ -475,7 +477,7 @@ function Is-GeneratedFile([string]$name) {
     return [bool]($name -match '(?i)\.(?:aux|log|toc|lof|lot|lol|out|bbl|blg|bcf|fls|fdb_latexmk|synctex(?:\.gz)?|run\.xml|xdv|dvi|nav|snm|vrb|idx|ind|ilg|glo|gls|glg|acn|acr|alg|nlo|nls|thm|maf|mtc\d*|auxlock)$')
 }
 
-function Move-StrayOutputs([string]$groupName) {
+function Move-StrayOutputs([string]$groupName, [bool]$IncludeBuild = $false) {
     $files = New-Object 'System.Collections.Generic.List[string]'
     $stack = New-Object 'System.Collections.Generic.Stack[string]'
     $stack.Push($script:project)
@@ -483,9 +485,14 @@ function Move-StrayOutputs([string]$groupName) {
         $folder = $stack.Pop()
         foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction Stop)) {
             if ($item.PSIsContainer) {
+                if ($item.FullName -ieq $script:build -and $IncludeBuild) {
+                    $stack.Push($item.FullName)
+                    continue
+                }
+                if ($folder -ieq $script:build -and $item.Name -in @('legacy', 'recovered', 'setup-backups')) { continue }
                 if (Skip-Directory $item) { continue }
                 $stack.Push($item.FullName)
-            } elseif (Is-GeneratedFile $item.Name) {
+            } elseif ($item.FullName -ine $script:runLog -and (Is-GeneratedFile $item.Name)) {
                 $files.Add($item.FullName)
             }
         }
@@ -506,6 +513,51 @@ function Move-StrayOutputs([string]$groupName) {
         Move-Item -LiteralPath $file -Destination $destination -ErrorAction Stop
     }
     return $files.Count
+}
+
+function Update-LatexmkConfig {
+    $name = $script:mainName.Replace('\', '\\').Replace("'", "\'")
+    $block = @'
+# BEGIN LATEX_SETUP MANAGED CONFIG
+@default_files = ('__SOURCE__');
+$out_dir = 'build';
+$aux_dir = 'build';
+$out2_dir = '.';
+@out2_exts = ('pdf');
+$pdf_mode = 5;
+$max_repeat = 10;
+$xelatex = 'xelatex -synctex=1 -interaction=nonstopmode -file-line-error -halt-on-error %O %S';
+# END LATEX_SETUP MANAGED CONFIG
+'@
+    $block = $block.Replace('__SOURCE__', $name)
+    $paths = @('latexmkrc', '.latexmkrc') | ForEach-Object { Join-Path $script:project $_ } |
+        Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
+    if (-not $paths) { $paths = @(Join-Path $script:project 'latexmkrc') }
+    foreach ($path in $paths) {
+        $previous = if (Test-Path -LiteralPath $path -PathType Leaf) {
+            [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+        } else { '' }
+        $preserved = [regex]::Replace($previous,
+            '(?ms)^# BEGIN LATEX_SETUP MANAGED CONFIG\r?\n.*?^# END LATEX_SETUP MANAGED CONFIG\s*', '').TrimEnd()
+        $new = if ($preserved) { $preserved + "`n`n" + $block + "`n" } else { $block + "`n" }
+        if ($previous -ne $new) {
+            if ($previous) { Copy-Item -LiteralPath $path -Destination (New-BackupName $path) }
+            [IO.File]::WriteAllText($path, $new, $script:utf8)
+        }
+        $script:configPaths.Add($path)
+        Write-Note ('Configured: ' + $path)
+    }
+}
+
+function Update-WorkspaceSettings {
+    Update-Settings $script:project
+    # Restore the original script's parent-workspace repair as the default.
+    if (-not $ProjectOnly) {
+        $parent = [IO.Directory]::GetParent($script:project)
+        if ($parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($parent.FullName)) {
+            Update-Settings $parent.FullName
+        }
+    }
 }
 
 function Prepare-IncludeFolders {
@@ -571,31 +623,29 @@ function Invoke-InitialCompilation {
 $ok = $false
 $detail = ''
 try {
+    if ($CleanOnly -and $ConfigureOnly) { throw 'Choose either -CleanOnly or -ConfigureOnly.' }
     $script:stage = 'locating LaTeX root document'
     Select-Project
     $script:stage = 'creating or repairing build/'
     Ensure-BuildDirectory
-    if (-not $CleanOnly) {
-        $script:stage = 'checking and repairing TeX Live environment'
-        Check-TeXEnvironment
-    }
     $script:stage = 'moving legacy auxiliary files into build/'
-    $script:archiveCount = Move-StrayOutputs 'legacy'
+    $script:archiveCount = Move-StrayOutputs 'legacy' $true
     Write-Note ('Archived old aux files: ' + $script:archiveCount)
     if (-not $CleanOnly) {
-        $script:stage = 'preparing include directories'
-        Prepare-IncludeFolders
-        $script:stage = 'repairing VS Code settings'
-        Update-Settings $script:project
-        # Configure a parent workspace only when explicitly requested.
-        if ($env:LATEX_SETUP_PARENT_CONFIG -eq '1') {
-            $parent = [IO.Directory]::GetParent($script:project)
-            if ($null -ne $parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($script:project)) {
-                Update-Settings $parent.FullName
-            }
+        $script:stage = 'repairing compilation and workspace configuration'
+        Update-LatexmkConfig
+        Update-WorkspaceSettings
+        if (-not $ConfigureOnly) {
+            # Cleanup and settings repair remain effective even if TeX is missing
+            # or compilation fails later.
+            $script:stage = 'checking and repairing TeX Live environment'
+            Check-TeXEnvironment
+            if ($script:toolEnv.Count) { Update-WorkspaceSettings }
+            $script:stage = 'preparing include directories'
+            Prepare-IncludeFolders
+            $script:stage = 'verifying first compile'
+            Invoke-InitialCompilation
         }
-        $script:stage = 'verifying first compile'
-        Invoke-InitialCompilation
     }
     $script:stage = 'collecting stray files'
     $script:recoveredCount = Move-StrayOutputs 'recovered'
@@ -603,12 +653,15 @@ try {
     $ok = $true
     if ($CleanOnly) {
         $detail = "清理完成。`n项目：$script:project`n主文件：$script:mainName`n已归档辅助文件：$script:archiveCount`n归档位置：build\legacy\"
+    } elseif ($ConfigureOnly) {
+        $detail = "清理与配置修复完成。`n项目：$script:project`n主文件：$script:mainName`n已归档辅助文件：$script:archiveCount`n配置文件：$($script:configPaths -join "`n")"
     } else {
         $detail = "初始化与编译完成。`n项目：$script:project`n主文件：$script:mainName`nPDF：$script:jobName.pdf`n辅助文件：build\`n以后在 VS Code 中打开实际主文件即可编译。"
     }
     if ($script:environmentNote) { $detail += "`n`n$script:environmentNote" }
 } catch {
     $detail = "初始化或编译失败。`n阶段：$script:stage`n原因：$($_.Exception.Message)"
+    $detail += "`n已归档辅助文件：$script:archiveCount`n已处理配置文件：$($script:configPaths.Count)"
     if ($script:runLog) {
         try { Write-Note ('FAIL at ' + $script:stage + ': ' + $_.Exception.Message) } catch { }
         $detail += "`n`n日志：$script:runLog"
