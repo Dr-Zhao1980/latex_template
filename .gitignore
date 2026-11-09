@@ -1,0 +1,25 @@
+# 每个模板独立生成编译产物。
+**/build/
+**/output/
+**/tmp/
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.xdv
+*.synctex.gz
+*.bcf
+*.run.xml
+**/main.pdf
+**/compile-check.txt
+*.backup-*
+.DS_Store
+Thumbs.db
+
+# PDF 插图、经过挑选的预览文件允许提交，勿使用 *.pdf 全局忽略。

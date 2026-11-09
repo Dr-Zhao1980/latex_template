@@ -1,0 +1,8 @@
+# 终端编译：在模板根目录执行 latexmk -pdfxe main.tex
+# 与附带的 Windows 初始化脚本兼容：辅助文件统一进入 build/
+@default_files = ('main.tex');
+$out_dir = 'build';
+$aux_dir = 'build';
+$pdf_mode = 5;
+$max_repeat = 10;
+$xelatex = 'xelatex -synctex=1 -interaction=nonstopmode -file-line-error -halt-on-error %O %S';

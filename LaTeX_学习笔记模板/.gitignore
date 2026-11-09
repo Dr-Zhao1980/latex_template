@@ -1,0 +1,16 @@
+/build/
+*.backup-*
+compile-check.txt
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.xdv
+*.run.xml
+*.bcf
+/main.pdf

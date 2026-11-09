@@ -1,0 +1,161 @@
+\NeedsTeXFormat{LaTeX2e}
+\ProvidesPackage{config/note-style}[2026/11/09 Chinese everyday note style]
+
+% ----------------- 页面与字体 -----------------
+\RequirePackage[a4paper,top=2.6cm,bottom=2.5cm,left=3cm,right=2.5cm,headheight=17pt,headsep=0.55cm,footskip=0.85cm]{geometry}
+\RequirePackage{amsmath,amssymb,amsthm,mathtools,bm}
+\RequirePackage{graphicx}
+\RequirePackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\RequirePackage{booktabs,tabularx,array,longtable,multirow}
+\RequirePackage{float}
+\RequirePackage{siunitx}
+\RequirePackage{enumitem}
+\RequirePackage[most]{tcolorbox}
+\RequirePackage{xcolor}
+\RequirePackage{fancyhdr}
+\RequirePackage[numbers,sort&compress]{natbib}
+% 独立链接序号避免正文与附录计数器重置后出现锚点重名。
+\RequirePackage[hypertexnames=false]{hyperref}
+\RequirePackage{bookmark}
+\RequirePackage{cleveref}
+
+\definecolor{NoteNavy}{HTML}{19324B}
+\definecolor{NoteTeal}{HTML}{237D85}
+\definecolor{NoteMuted}{HTML}{647487}
+\definecolor{NotePale}{HTML}{F3F7F9}
+\definecolor{NoteWarm}{HTML}{FFF7EA}
+\definecolor{NoteWarmBorder}{HTML}{D5A351}
+\definecolor{NoteCodeBg}{HTML}{F5F7F8}
+
+% 目录/正文链接以克制的深色显示；打印仍清晰。
+\hypersetup{unicode=true,hidelinks,pdfstartview=FitH}
+\graphicspath{{media/}}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.16em}
+\setlength{\emergencystretch}{2em}
+\linespread{1.3}
+\setcounter{tocdepth}{2}
+\setcounter{secnumdepth}{2}
+\setlist[itemize]{topsep=0.25em,itemsep=0.15em,parsep=0pt,leftmargin=2em}
+\setlist[enumerate]{topsep=0.25em,itemsep=0.15em,parsep=0pt,leftmargin=2em}
+\sisetup{per-mode=symbol}
+
+% ----------------- 标题层级 -----------------
+\ctexset{
+  chapter={
+    name={第,章},number=\arabic{chapter},
+    format=\centering\zihao{3}\bfseries,
+    beforeskip=2.2ex,afterskip=2.4ex,
+    aftername=\quad
+  },
+  section={format=\zihao{4}\bfseries,beforeskip=2.2ex,afterskip=1ex},
+  subsection={format=\zihao{-4}\bfseries,beforeskip=1.5ex,afterskip=0.7ex}
+}
+
+% ----------------- 页眉与页脚 -----------------
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{\small\nouppercase{\leftmark}}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.35pt}
+\renewcommand{\footrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0pt}}
+
+% ----------------- 定义、定理、证明 -----------------
+\theoremstyle{definition}
+\newtheorem{definition}{定义}[chapter]
+\newtheorem{example}{例}[chapter]
+\theoremstyle{plain}
+\newtheorem{theorem}{定理}[chapter]
+\newtheorem{lemma}[theorem]{引理}
+\newtheorem{proposition}[theorem]{命题}
+\theoremstyle{remark}
+\newtheorem*{remark}{备注}
+\renewcommand{\proofname}{证明}
+
+% ----------------- 三类适合课堂记录的提示框 -----------------
+\newtcolorbox{noteinfo}[1][要点]{
+  enhanced,breakable,sharp corners=downhill,boxrule=0.5pt,
+  colback=NotePale,colframe=NoteTeal,
+  borderline west={2.4pt}{0pt}{NoteTeal},
+  fonttitle=\bfseries,coltitle=white,title={#1},
+  left=9pt,right=9pt,top=7pt,bottom=7pt,before skip=10pt,after skip=10pt
+}
+\newtcolorbox{notewarning}[1][易错提醒]{
+  enhanced,breakable,boxrule=0.5pt,
+  colback=NoteWarm,colframe=NoteWarmBorder,
+  borderline west={2.4pt}{0pt}{NoteWarmBorder},
+  fonttitle=\bfseries,coltitle=black,title={#1},
+  left=9pt,right=9pt,top=7pt,bottom=7pt,before skip=10pt,after skip=10pt
+}
+\newtcolorbox{notequestion}[1][待解决问题]{
+  enhanced,breakable,boxrule=0.45pt,colback=white,colframe=NoteMuted,
+  fonttitle=\bfseries,coltitle=NoteNavy,title={#1},
+  left=9pt,right=9pt,top=7pt,bottom=7pt,before skip=10pt,after skip=10pt
+}
+
+% ----------------- 高频数学符号 -----------------
+% \dimvec{v}{3} -> 向量箭头+3×1下标；矩阵/算子同理。
+\newcommand{\dimvec}[2]{\vec{#1}_{#2\times 1}}
+\newcommand{\dimmat}[3]{\bm{#1}_{#2\times #3}}
+\newcommand{\dimop}[3]{\mathsf{#1}_{#2\times #3}}
+\newcommand{\diff}{\mathop{}\!\mathrm{d}}
+\newcommand{\pder}[2]{\frac{\partial #1}{\partial #2}}
+\newcommand{\oder}[2]{\frac{\diff #1}{\diff #2}}
+\newcommand{\transpose}{\mathsf{T}}
+\newcommand{\term}[1]{\textbf{\color{NoteNavy}#1}}
+\newcommand{\highlight}[1]{\textcolor{NoteTeal}{\textbf{#1}}}
+\newcommand{\noterule}{\par\vspace{0.35em}{\color{NoteMuted}\hrule}\vspace{0.55em}}
+
+% ----------------- 紧凑目录：避免单独占用一整页 -----------------
+\makeatletter
+\newcommand{\compacttableofcontents}{%
+  \par\vspace{1.1em}
+  {\centering\Large\bfseries\color{NoteNavy}目\quad 录\par}
+  \vspace{0.7em}
+  \@starttoc{toc}%
+}
+\makeatother
+
+% ----------------- 交叉引用与编号 -----------------
+\numberwithin{equation}{chapter}
+\crefname{equation}{式}{式}
+\crefname{figure}{图}{图}
+\crefname{table}{表}{表}
+\crefname{section}{节}{节}
+
+% ----------------- 论文式封面 -----------------
+\newcommand{\makenotetitle}{%
+  \begin{titlepage}
+    \thispagestyle{empty}
+    \centering
+    \vspace*{0.08\textheight}
+    {\zihao{2}\NoteInstitution\par}
+    \vspace{2.5em}
+    {\zihao{1}\bfseries\NoteTitle\par}
+    \vspace{1.2em}
+    {\zihao{3}\NoteSubtitle\par}
+    \vspace{4em}
+    \renewcommand{\arraystretch}{1.8}
+    \begin{tabular}{rl}
+      作者： & \NoteAuthor\\
+      专业或课程： & \NoteCourse\\
+      指导教师： & \NoteAdvisor
+    \end{tabular}
+    \vfill
+    {\NoteDate\par}
+    \vspace*{0.05\textheight}
+  \end{titlepage}%
+}
+
+% 附录一至四；节、公式、图表用“附1.1”等编号，与正文区分。
+\newcommand{\noteappendix}{%
+  \appendix
+  \ctexset{chapter={name={附录,},number=\chinese{chapter}}}%
+  \renewcommand{\thechapter}{\chinese{chapter}}%
+  \renewcommand{\thesection}{附\arabic{chapter}.\arabic{section}}%
+  \renewcommand{\theequation}{附\arabic{chapter}.\arabic{equation}}%
+  \renewcommand{\thefigure}{附\arabic{chapter}.\arabic{figure}}%
+  \renewcommand{\thetable}{附\arabic{chapter}.\arabic{table}}%
+}

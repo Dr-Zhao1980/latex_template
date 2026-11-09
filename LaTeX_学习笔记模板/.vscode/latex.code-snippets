@@ -1,0 +1,10 @@
+{
+  "LaTeX: 章节": {"prefix":"nchapter", "body":["\\chapter{$1}","\\label{chap:$2}","","$0"],"description":"新增章节"},
+  "LaTeX: 对齐公式": {"prefix":"nalign", "body":["\\begin{align}","  $1 &= $2 \\\\","  $3 &= $4","\\end{align}","$0"],"description":"多行公式对齐"},
+  "LaTeX: 可引用公式": {"prefix":"neq", "body":["\\begin{equation}","  \\label{eq:$1}","  $2","\\end{equation}","$0"],"description":"可编号公式"},
+  "LaTeX: 重点提示框": {"prefix":"nbox", "body":["\\begin{noteinfo}[$1]","$2","\\end{noteinfo}","$0"],"description":"蓝绿色重点框"},
+  "LaTeX: 待解决问题": {"prefix":"nq", "body":["\\begin{notequestion}[$1]","$2","\\end{notequestion}","$0"],"description":"记录待解决问题"},
+  "LaTeX: 图": {"prefix":"nfig", "body":["\\begin{figure}[htbp]","  \\centering","  \\includegraphics[width=0.72\\linewidth]{$1}","  \\caption{$2}\\label{fig:$3}","\\end{figure}","$0"],"description":"带标题的图"},
+  "LaTeX: 维度向量": {"prefix":"nvec", "body":["\\dimvec{$1}{$2}"],"description":"箭头向量+行列数"},
+  "LaTeX: 维度矩阵": {"prefix":"nmat", "body":["\\dimmat{$1}{$2}{$3}"],"description":"粗体矩阵+行列数"}
+}

@@ -1,0 +1,44 @@
+{
+    "latex-workshop.latex.outDir":  "%DIR%/build",
+    "latex-workshop.latex.auxDir":  "%DIR%/build",
+    "latex-workshop.latex.recipe.default":  "first",
+    "latex-workshop.latex.recipes":  [
+                                         {
+                                             "name":  "XeLaTeX | main.tex | build/",
+                                             "tools":  [
+                                                           "latexmk-xelatex-main-clean"
+                                                       ]
+                                         }
+                                     ],
+    "latex-workshop.latex.tools":  [
+                                       {
+                                           "name":  "latexmk-xelatex-main-clean",
+                                           "command":  "latexmk",
+                                           "args":  [
+                                                        "-norc",
+                                                        "-pdfxe",
+                                                        "-e",
+                                                        "@out2_exts=(qw(pdf));$max_repeat=10;",
+                                                        "-outdir=build",
+                                                        "-out2dir=.",
+                                                        "-synctex=1",
+                                                        "-interaction=nonstopmode",
+                                                        "-file-line-error",
+                                                        "-halt-on-error",
+                                                        "-g",
+                                                        "main.tex"
+                                                    ],
+                                           "cwd":  "%DIR%",
+                                           "env":  {
+
+                                                   }
+                                       }
+                                   ],
+    "latex-workshop.latex.build.fromFolder":  "",
+    "latex-workshop.latex.build.enableMagicComments":  false,
+    "latex-workshop.latex.rootFile.useSubFile":  false,
+    "latex-workshop.latex.autoBuild.run":  "onSave",
+    "latex-workshop.latex.autoClean.run":  "never",
+    "latex-workshop.latex.autoBuild.cleanAndRetry.enabled":  false,
+    "latex-workshop.view.pdf.viewer":  "tab"
+}

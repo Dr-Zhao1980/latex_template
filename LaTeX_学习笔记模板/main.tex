@@ -1,0 +1,53 @@
+% !TeX program = xelatex
+% !TeX encoding = UTF-8
+% !TeX root = main.tex
+% 在本文件所在目录运行：latexmk main.tex
+\documentclass[UTF8,fontset=fandol,a4paper,zihao=-4,oneside,openany]{ctexbook}
+\usepackage{config/note-style}
+
+% ---------- 只需先修改以下信息 ----------
+\newcommand{\NoteTitle}{论文或学习笔记标题}
+\newcommand{\NoteSubtitle}{通用写作模板}
+\newcommand{\NoteAuthor}{作者姓名}
+\newcommand{\NoteInstitution}{学校或单位名称}
+\newcommand{\NoteCourse}{专业或课程名称}
+\newcommand{\NoteAdvisor}{指导教师姓名}
+\newcommand{\NoteDate}{\today}
+
+% 没有引文时可改为 \notebibliographyfalse。
+\newif\ifnotebibliography
+\notebibliographytrue
+\hypersetup{pdftitle={\NoteTitle},pdfauthor={\NoteAuthor}}
+
+\begin{document}
+\frontmatter
+\makenotetitle
+\input{chapters/正文/00-摘要.tex}
+\tableofcontents
+\mainmatter
+
+% 正文：七章框架。按需修改标题、增删文件，并同步调整载入列表。
+\input{chapters/正文/01-绪论.tex}
+\input{chapters/正文/02-基础理论.tex}
+\input{chapters/正文/03-模型建立.tex}
+\input{chapters/正文/04-方法与推导.tex}
+\input{chapters/正文/05-结果与分析.tex}
+\input{chapters/正文/06-讨论与扩展.tex}
+\input{chapters/正文/07-总结与展望.tex}
+
+% 参考文献：只保留排版示例，使用时替换 references.bib。
+\ifnotebibliography
+  \clearpage
+  \phantomsection
+  \addcontentsline{toc}{chapter}{参考文献}
+  \bibliographystyle{gbt7714-numerical}
+  \bibliography{references}
+\fi
+
+% 附录：四个独立文件，显示“附录一”至“附录四”。
+\noteappendix
+\input{chapters/附录/附录1-符号与关系速查.tex}
+\input{chapters/附录/附录2-补充推导.tex}
+\input{chapters/附录/附录3-补充材料.tex}
+\input{chapters/附录/附录4-参数说明.tex}
+\end{document}
