@@ -157,11 +157,12 @@ try {
         Check (Test-Path -LiteralPath $unrelated) 'Caller working directory was cleaned'
         Check (Test-Path -LiteralPath (Join-Path $project '课程 笔记.pdf')) 'Standalone root PDF missing'
         Check (Test-Path -LiteralPath (Join-Path $project 'build/课程 笔记.synctex.gz')) 'Standalone SyncTeX missing'
-        foreach ($old in @('old.aux', 'build/old.log', 'chapters/old.aux')) {
+        foreach ($old in @('old.aux', 'chapters/old.aux')) {
             Check (-not (Test-Path -LiteralPath (Join-Path $project $old))) ('Old output remains: ' + $old)
         }
         $archived = @(Get-ChildItem -LiteralPath (Join-Path $project 'build/legacy') -File -Recurse)
-        Check ($archived.Count -eq 4) 'Old outputs were not archived completely'
+        Check ($archived.Count -eq 3) 'Stray outputs were not archived completely'
+        Check (Test-Path -LiteralPath (Join-Path $project 'build/old.log')) 'Normal setup discarded build cache before compiling'
         Check ([IO.File]::ReadAllText($archiveSentinel) -eq 'existing archive') 'Existing archive was moved'
         Check ([IO.File]::ReadAllText($pdfFigure) -eq 'PDF figure sentinel') 'PDF figure was changed'
         foreach ($path in @((Join-Path $project '.vscode/settings.json'), (Join-Path $fixture ($workspace + '/.vscode/settings.json')))) {
@@ -193,6 +194,7 @@ try {
         Check ($result.Code -eq 0) $result.Output
         Check (-not (Test-Path -LiteralPath (Join-Path $project 'new.aux'))) 'Configure-only did not clean outputs'
         Check (-not (Test-Path -LiteralPath (Join-Path $project 'build/课程 笔记.aux'))) 'Configure-only left active build cache'
+        Check (-not (Test-Path -LiteralPath (Join-Path $project 'build/old.log'))) 'Explicit cleanup left stale build output'
         Check ((Get-FileHash -LiteralPath $settingsPath).Hash -eq $settingsHash) 'Repeated settings repair is not idempotent'
         Check ((Get-FileHash -LiteralPath $rc).Hash -eq $rcHash) 'Repeated latexmk repair is not idempotent'
         Check ((Get-FileHash -LiteralPath $pdf).Hash -eq $pdfHash) 'Configure-only compiled or removed the PDF'
@@ -213,6 +215,9 @@ try {
         Push-Location $project
         try { $result = Native $tool.command $toolArgs } finally { Pop-Location }
         Check ($result.Code -eq 0) $result.Output
+        Check ($tool.command -eq 'powershell.exe') 'VS Code bypasses the recovery runner'
+        Check (Test-Path -LiteralPath (Join-Path $project '.vscode/build-latex.ps1')) 'Build runner was not generated'
+        $lastGoodPdf = (Get-FileHash -LiteralPath $pdf).Hash
 
         # Cleanup and settings must not be skipped when compilation fails.
         [void](Put ($relative + '/课程 笔记.tex') "\documentclass{article}`n\begin{document}\DefinitelyUndefinedCommand\end{document}")
@@ -223,6 +228,7 @@ try {
         Check (-not (Test-Path -LiteralPath (Join-Path $project 'failure.aux'))) 'Compilation failure prevented cleanup'
         $config = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
         Check ($config.'latex-workshop.latex.outDir' -eq '%DIR%/build') 'Compilation failure prevented configuration repair'
+        Check ((Get-FileHash -LiteralPath $pdf).Hash -eq $lastGoodPdf) 'Failed recovery removed the last successful PDF'
         $parentPath = Put ($workspace + '/.vscode/settings.json') '{ parent deliberately untouched'
         $parentHash = (Get-FileHash -LiteralPath $parentPath).Hash
         $result = Run @('-ProjectOnly', '-ConfigureOnly') $program ($kind -eq 'bat')

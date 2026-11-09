@@ -15,12 +15,34 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-latex.ps1
 默认依次执行：
 
 1. 识别主文件，支持中文、空格文件名与 `% !TeX root`。
-2. 把散落的辅助文件及 `build/` 中的旧编译缓存归档到 `build/legacy/`，保留源码、图片和 PDF。
+2. 把散落在源码目录的辅助文件归档到 `build/legacy/`，正常运行保留 `build/` 缓存。
 3. 备份并修复项目和上一级的 `.vscode/settings.json`，兼容直接打开项目或打开父目录的情况；保留无关的编辑器设置。
 4. 修复项目的 `latexmkrc` / `.latexmkrc`，统一主文件、XeLaTeX、输出目录和 SyncTeX 配置。
-5. 检查 TeX Live 并完成编译，输出 `build/主文件名.pdf`，项目目录另放一份同名 PDF；新辅助文件统一留在 `build/`。
+5. 生成 `.vscode/build-latex.ps1`，检查 TeX Live 并执行增量编译；失败时用 `latexmk -c` 清理辅助文件，只重试一次。
 
 `.bat` 内嵌完整实现；运行时的临时 PowerShell 文件会自动清除。两个版本具有相同功能。
+
+## 保存后自动编译
+
+初始化后，VS Code 保存 `.tex` 时自动调用 `.vscode/build-latex.ps1`：
+
+```text
+保存 → latexmk 增量编译
+       ├─ 成功：保留缓存和 PDF
+       └─ 失败：latexmk -c → 重试一次
+                            ├─ 成功：继续使用
+                            └─ 失败：返回实际错误码，查看 build/主文件名.log
+```
+
+日常编译不删除 `build/`，不使用 `-g` 或 `-norc`。成功时保留辅助文件和文献缓存；失败清理使用 `-c`，不使用会删除输出的 `-C`。VS Code 自身的额外清理重试关闭，重试次数由脚本统一控制。
+
+也可手动运行，支持非 `main.tex` 文件名：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\.vscode\build-latex.ps1 -MainFile "课程 笔记.tex"
+```
+
+PDF 位于 `build/`，项目目录另放一份同名 PDF。两个独立初始化脚本都内嵌编译脚本，不需要另外下载或复制依赖。
 
 ## 可选参数
 
@@ -43,7 +65,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-latex.ps1
 .\setup-latex.bat -ProjectOnly
 ```
 
-配置文件的原版保存在同目录的 `.backup-时间戳` 文件中。重复运行不会反复追加配置块。编译失败时，已完成的清理和配置修复仍然生效，错误日志保留在 `build/`。
+手动指定 `-CleanOnly` 或 `-ConfigureOnly` 时仍会归档 `build/` 中的旧辅助文件。配置文件的原版保存在同目录的 `.backup-时间戳` 文件中。重复运行不会反复追加配置块。编译失败时，已完成的清理和配置修复仍然生效，错误日志保留在 `build/`。
 
 主文件改名后应同步更新章节中的 `% !TeX root` 路径，再运行任意一个脚本。默认使用 XeLaTeX，完整编译需要 TeX Live 与 latexmk 4.86 或更新版本。
 
@@ -51,4 +73,5 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\setup-latex.ps1
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\test-setup-latex.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\test-build-latex.ps1
 ```

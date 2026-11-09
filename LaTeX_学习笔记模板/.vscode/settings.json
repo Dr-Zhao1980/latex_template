@@ -4,27 +4,25 @@
     "latex-workshop.latex.recipe.default":  "first",
     "latex-workshop.latex.recipes":  [
                                          {
-                                             "name":  "XeLaTeX | detected root | build/",
+                                             "name":  "XeLaTeX | incremental + one retry",
                                              "tools":  [
-                                                           "latexmk-xelatex"
+                                                           "powershell-latex-build"
                                                        ]
                                          }
                                      ],
     "latex-workshop.latex.tools":  [
                                        {
-                                           "name":  "latexmk-xelatex",
-                                           "command":  "latexmk",
+                                           "name":  "powershell-latex-build",
+                                           "command":  "powershell.exe",
                                            "args":  [
-                                                        "-norc",
-                                                        "-pdfxe",
-                                                        "-e",
-                                                        "@out2_exts=(qw(pdf));$max_repeat=10;",
-                                                        "-outdir=build",
-                                                        "-out2dir=.",
-                                                        "-synctex=1",
-                                                        "-interaction=nonstopmode",
-                                                        "-file-line-error",
-                                                        "-halt-on-error",
+                                                        "-NoProfile",
+                                                        "-ExecutionPolicy",
+                                                        "Bypass",
+                                                        "-File",
+                                                        "%DIR%/.vscode/build-latex.ps1",
+                                                        "-ProjectRoot",
+                                                        "%DIR%",
+                                                        "-MainFile",
                                                         "%DOC%"
                                                     ],
                                            "cwd":  "%DIR%",
