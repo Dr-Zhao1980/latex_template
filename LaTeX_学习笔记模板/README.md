@@ -1,31 +1,31 @@
 # LaTeX 学习笔记模板
 
-用于学习笔记、专题报告及论文初稿的中文模板。默认内容仅包含简短占位文字、公式、定理、图表和文献引用示例。
+用于课程笔记、专题记录和公式推导。正文按 `00-章节0.tex`、`01-章节1.tex` 等命名，只提供简短文字与排版示例。
 
-[返回模板集](../README.md) · [编译配置](../docs/编译与环境配置.md) · [结构对应表](../docs/旧笔记迁移指南.md) · [语法速查](../docs/语法速查.md)
+[返回模板集](../README.md) · [脚本说明](../整理产物的脚本/README.md) · [编译配置](../docs/编译与环境配置.md) · [语法速查](../docs/语法速查.md)
 
 ## 开始使用
 
-1. 复制本目录，使用 VS Code 打开复制后的文件夹。
-2. 修改 `main.tex` 顶部的标题、作者、学校、专业或课程、指导教师及日期。
-3. 按需替换 `chapters/正文/` 与 `chapters/附录/` 中的简短示例。
-4. 在本目录执行 `latexmk main.tex`，打开 `build/main.pdf`。
+1. 复制本目录，用 VS Code 打开复制后的文件夹。
+2. 修改 `main.tex` 中的笔记标题、作者、课程或主题、日期。
+3. 替换正文和附录中的示例，按需要增删章节。
+4. 执行 `latexmk main.tex`，打开 `build/main.pdf`；Windows 也可双击 `setup-latex.bat`。
 
-需要 TeX Live 中的 XeLaTeX、latexmk、BibTeX、ctex、Fandol、natbib、gbt7714、pgfplots、tcolorbox 等组件。Windows 用户可双击 `setup-latex.bat`；该启动文件调用同目录 `setup-latex.ps1`，完成检查、配置和编译后还会复制一份 `main.pdf` 到模板目录。
+需要 TeX Live 中的 XeLaTeX、latexmk、BibTeX、ctex、Fandol、natbib、gbt7714、pgfplots、tcolorbox 等组件。
 
 ## 内容结构
 
 ```text
 chapters/
 ├── 正文/
-│   ├── 00-摘要.tex
-│   ├── 01-绪论.tex
-│   ├── 02-基础理论.tex
-│   ├── 03-模型建立.tex
-│   ├── 04-方法与推导.tex
-│   ├── 05-结果与分析.tex
-│   ├── 06-讨论与扩展.tex
-│   └── 07-总结与展望.tex
+│   ├── 00-章节0.tex
+│   ├── 01-章节1.tex
+│   ├── 02-章节2.tex
+│   ├── 03-章节3.tex
+│   ├── 04-章节4.tex
+│   ├── 05-章节5.tex
+│   ├── 06-章节6.tex
+│   └── 07-章节7.tex
 └── 附录/
     ├── 附录1-符号与关系速查.tex
     ├── 附录2-补充推导.tex
@@ -33,41 +33,33 @@ chapters/
     └── 附录4-参数说明.tex
 ```
 
-正文承载主要论述，附录放置符号速查、长推导、补充材料与参数说明。模板只保留各部分的最小示例；原始笔记另行归档，不随模板发布。
+章节从第 0 章开始，与文件名前缀一致。每章都可改成自己的主题；标题区与目录放在一起，正文直接开始记笔记。
 
-## 层级与编号
+## 增删章节
 
-| 内容 | 默认形式 |
-| --- | --- |
-| 正文层级 | 第 1 章、1.1、1.1.1 |
-| 前置页 / 正文页码 | 罗马数字 / 阿拉伯数字 |
-| 正文公式、图、表 | 按章编号，如 `(3.1)`、图 5.1、表 5.1 |
-| 附录标题 | 附录一、附录二、附录三、附录四 |
-| 附录公式、图、表 | 加“附”前缀，如 `(附2.1)`、表附1.1 |
-| 参考文献 | 使用 `gbt7714-numerical` 顺序编码样式 |
-
-采用 A4、中文小四号、黑白标题及常见论文层级。页边距、字体、行距、标题、页眉页脚统一在 `config/note-style.sty` 修改；具体学校或期刊的格式仍需按其要求适配。
-
-## 增删章节与附录
-
-在对应目录新建 `.tex`，顶部写入：
+复制一个正文文件，例如 `08-章节8.tex`：
 
 ```latex
 % !TeX root = ../../main.tex
-\chapter{新的标题}
-\label{chap:new-topic}
-\section{小节标题}
-此处填写内容。
+\chapter{章节8}
+\label{chap:chapter8}
+\section{学习要点}
+这里记录学习内容。
 ```
 
-正文在 `main.tex` 的正文列表中添加 `\input{chapters/正文/文件名.tex}`；附录在 `\noteappendix` 后添加 `\input{chapters/附录/文件名.tex}`，附录标签建议使用 `app:` 前缀。编号由载入顺序自动生成，删改文件时同步修改列表。
+在 `main.tex` 的正文列表中添加 `\input{chapters/正文/08-章节8.tex}`。附录文件在 `\noteappendix` 后载入，显示“附录一”至“附录四”。删除文件时同步删除对应的载入行。
 
-正文和附录使用 `\label`、`\ref`、`\eqref` 互相引用。不要手写固定编号，也不要将 `\chapter` 放进链接或普通正文中。
+公式、图表按章编号；附录加“附”前缀，例如 `(附2.1)`。使用 `\label`、`\ref`、`\eqref` 引用，编号随顺序自动更新。
 
-## 图片、文献与可选组件
+## 编译与主文件改名
 
-图片放进 `media/`，使用 `\includegraphics{文件名.png}`。默认示例图由 pgfplots 绘制，不需要外部图片。
+脚本可识别任意名称的主文件。可以把项目目录或 `.tex` 文件拖到 `setup-latex.bat` 上，也可明确指定：
 
-将自己的文献填入 `references.bib`，正文使用 `\cite{文献键}`。当前只有一条示例；删除所有引文后，可将 `\notebibliographytrue` 改为 `\notebibliographyfalse`。
+```powershell
+.\setup-latex.bat -MainFile "课程 笔记.tex"
+.\setup-latex.bat -MainFile "课程 笔记.tex" -CleanOnly
+```
 
-保留了 `\dimvec`、`\dimmat`、`\dimop`、`\pder` 等数学命令，以及 `noteinfo`、`notewarning`、`notequestion` 可选笔记框。写法见 [语法速查](../docs/语法速查.md)，默认论文页面不放置这些提示框。
+主文件改名时，同步修改章节顶部的 `% !TeX root` 和 `latexmkrc` 中的默认文件。VS Code 配方使用实际主文件，不固定为 `main.tex`；输出文件也会跟随主文件名。
+
+图片放入 `media/`，文献写入 `references.bib`。页面样式、数学命令、定理与可选笔记框集中在 `config/note-style.sty`。

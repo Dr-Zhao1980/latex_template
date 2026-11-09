@@ -1,12 +1,19 @@
 ﻿[CmdletBinding()]
-param([string]$ProjectRoot = $PSScriptRoot)
+param(
+    [Parameter(Position = 0)][string]$ProjectRoot,
+    [string]$MainFile,
+    [switch]$CleanOnly,
+    [switch]$NoDialog
+)
 
-# Windows PowerShell 5.1 compatible.  All project paths are relative to main.tex.
+# Windows PowerShell 5.1 compatible. Accept a project folder or a .tex file.
 # The .bat launcher calls this script so there is only one implementation.
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $script:stage = 'starting'
 $script:project = $null
+$script:mainName = $null
+$script:jobName = $null
 $script:build = $null
 $script:runLog = $null
 $script:latexmk = $null
@@ -30,7 +37,7 @@ function Write-Note([string]$message) {
 function Show-Result([bool]$ok, [string]$message) {
     $title = if ($ok) { 'LaTeX - Ready' } else { 'LaTeX - Failed' }
     Write-Host ($title + ': ' + $message)
-    if ($env:LATEX_SETUP_NO_DIALOG -eq '1') { return }
+    if ($NoDialog -or $env:LATEX_SETUP_NO_DIALOG -eq '1') { return }
     try {
         Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
         $icon = if ($ok) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Error }
@@ -55,6 +62,126 @@ function New-BackupName([string]$path) {
         $candidate = $stem + '-' + $i
     }
     return $candidate
+}
+
+function Skip-Directory([IO.DirectoryInfo]$directory) {
+    if ($directory.Name -in @('build', '.vscode', '.git', '.svn', '.hg',
+            '.workbuddy', 'node_modules', '.venv', 'venv', '原始笔记备份',
+            '垃圾箱', 'archive', 'archives', 'backup', 'backups')) { return $true }
+    return (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)
+}
+
+function Get-TeXSources([string]$root) {
+    $stack = New-Object 'System.Collections.Generic.Stack[string]'
+    $stack.Push($root)
+    while ($stack.Count -gt 0) {
+        $folder = $stack.Pop()
+        foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction SilentlyContinue)) {
+            if ($item.PSIsContainer) {
+                if (-not (Skip-Directory $item)) { $stack.Push($item.FullName) }
+            } elseif ($item.Extension -ieq '.tex') {
+                $item
+            }
+        }
+    }
+}
+
+function Read-TeXCode([string]$path) {
+    $text = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+    # Ignore commented examples and common verbatim/code environments.
+    $text = [regex]::Replace($text, '(?m)(?<!\\)%.*$', '')
+    return [regex]::Replace($text,
+        '(?s)\\begin\{(verbatim\*?|Verbatim|lstlisting|minted)\}.*?\\end\{\1\}', '')
+}
+
+function Resolve-RootHint([string]$path) {
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    while ($seen.Add($path)) {
+        $text = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+        $hint = [regex]::Match($text, '(?im)^\s*%\s*!TeX\s+root\s*=\s*(.+?)\s*$')
+        if (-not $hint.Success) { return $path }
+        $value = $hint.Groups[1].Value.Trim().Trim('"').Trim("'")
+        $next = if ([IO.Path]::IsPathRooted($value)) { $value } else {
+            Join-Path ([IO.Path]::GetDirectoryName($path)) $value
+        }
+        $next = [IO.Path]::GetFullPath($next)
+        if ($next -ieq $path) { return $path }
+        if ([IO.Path]::GetExtension($next) -ine '.tex' -or
+            -not (Test-Path -LiteralPath $next -PathType Leaf)) { return $path }
+        $path = $next
+    }
+    throw ('Circular % !TeX root declarations: ' + $path)
+}
+
+function Find-EntryFiles([string]$root) {
+    $entries = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in @(Get-TeXSources $root)) {
+        $resolved = Resolve-RootHint $file.FullName
+        $code = Read-TeXCode $resolved
+        if ($code -match '(?m)^\s*\\documentclass\s*(?:\[[^\]]*\]\s*)?\{(?!subfiles\})[^}]+\}') {
+            [void]$entries.Add($resolved)
+        }
+    }
+    $entries | Sort-Object
+}
+
+function Select-Project {
+    if ($MainFile) {
+        $base = if ($ProjectRoot) { $ProjectRoot } else { (Get-Location).Path }
+        $entry = if ([IO.Path]::IsPathRooted($MainFile)) { $MainFile } else {
+            Join-Path $base $MainFile
+        }
+        $entry = [IO.Path]::GetFullPath($entry)
+    } elseif ($ProjectRoot -and (Test-Path -LiteralPath $ProjectRoot -PathType Leaf)) {
+        $entry = [IO.Path]::GetFullPath($ProjectRoot)
+    } else {
+        $roots = New-Object 'System.Collections.Generic.List[string]'
+        if ($ProjectRoot) {
+            if (-not (Test-Path -LiteralPath $ProjectRoot -PathType Container)) {
+                throw ('Project folder not found: ' + $ProjectRoot)
+            }
+            $roots.Add([IO.Path]::GetFullPath($ProjectRoot))
+        } else {
+            # A terminal project takes priority; double-clicking can use the
+            # script folder or its parent (for a separate tools/ folder).
+            $current = (Get-Location).Path
+            if ($current -ne [IO.Path]::GetPathRoot($current)) { $roots.Add($current) }
+            if (-not $roots.Contains($PSScriptRoot)) { $roots.Add($PSScriptRoot) }
+            $parent = [IO.Directory]::GetParent($PSScriptRoot)
+            if ($parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($parent.FullName) -and
+                -not $roots.Contains($parent.FullName)) { $roots.Add($parent.FullName) }
+        }
+        $candidates = @()
+        foreach ($root in $roots) {
+            $candidates = @(Find-EntryFiles $root)
+            if ($candidates.Count) { break }
+        }
+        if ($candidates.Count -eq 0) {
+            throw 'No LaTeX root document found. Pass a .tex path or use -MainFile.'
+        }
+        if ($candidates.Count -gt 1) {
+            throw ("Multiple LaTeX root documents found. Select one with -MainFile:`n" +
+                ($candidates -join "`n"))
+        }
+        $entry = $candidates[0]
+    }
+    if ([IO.Path]::GetExtension($entry) -ine '.tex' -or
+        -not (Test-Path -LiteralPath $entry -PathType Leaf)) {
+        throw ('LaTeX source file not found: ' + $entry)
+    }
+    $entry = Resolve-RootHint $entry
+    $script:project = [IO.Path]::GetDirectoryName($entry)
+    $script:mainName = [IO.Path]::GetFileName($entry)
+    $script:jobName = [IO.Path]::GetFileNameWithoutExtension($entry)
+    Write-Note ('Root document: ' + $entry)
+}
+
+function Quote-NativeArgument([string]$value) {
+    if ($value.Length -gt 0 -and $value -notmatch '[\s"]') { return $value }
+    # Windows CommandLineToArgvW escaping, including trailing backslashes.
+    $escaped = [regex]::Replace($value, '(\\*)"', '$1$1\"')
+    $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+    return '"' + $escaped + '"'
 }
 
 function Ensure-BuildDirectory {
@@ -259,13 +386,13 @@ function ConvertFrom-JsonC([string]$inputText) {
 
 function New-WorkshopSettings {
     $tool = [ordered]@{
-        name = 'latexmk-xelatex-main-clean'
+        name = 'latexmk-xelatex'
         command = $script:toolCommand
         args = @(
             '-norc', '-pdfxe', '-e', '@out2_exts=(qw(pdf));$max_repeat=10;',
             '-outdir=build', '-out2dir=.', '-synctex=1',
             '-interaction=nonstopmode', '-file-line-error', '-halt-on-error',
-            '-g', 'main.tex'
+            '%DOC%'
         )
         cwd = '%DIR%'
         env = $script:toolEnv
@@ -275,11 +402,11 @@ function New-WorkshopSettings {
         'latex-workshop.latex.auxDir' = '%DIR%/build'
         'latex-workshop.latex.recipe.default' = 'first'
         'latex-workshop.latex.recipes' = @(
-            [ordered]@{ name = 'XeLaTeX | main.tex | build/'; tools = @('latexmk-xelatex-main-clean') }
+            [ordered]@{ name = 'XeLaTeX | detected root | build/'; tools = @('latexmk-xelatex') }
         )
         'latex-workshop.latex.tools' = @($tool)
         'latex-workshop.latex.build.fromFolder' = ''
-        'latex-workshop.latex.build.enableMagicComments' = $false
+        'latex-workshop.latex.build.enableMagicComments' = $true
         'latex-workshop.latex.rootFile.useSubFile' = $false
         'latex-workshop.latex.autoBuild.run' = 'onSave'
         'latex-workshop.latex.autoClean.run' = 'never'
@@ -356,8 +483,7 @@ function Move-StrayOutputs([string]$groupName) {
         $folder = $stack.Pop()
         foreach ($item in @(Get-ChildItem -LiteralPath $folder -Force -ErrorAction Stop)) {
             if ($item.PSIsContainer) {
-                if ($item.Name -in @('build', '.vscode', '.git', '.svn', '.hg', 'node_modules', '.venv', '原始笔记备份')) { continue }
-                if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if (Skip-Directory $item) { continue }
                 $stack.Push($item.FullName)
             } elseif (Is-GeneratedFile $item.Name) {
                 $files.Add($item.FullName)
@@ -370,6 +496,12 @@ function Move-StrayOutputs([string]$groupName) {
     foreach ($file in $files) {
         $rel = $file.Substring($rootLen).TrimStart('\','/')
         $destination = Join-Path $destinationRoot $rel
+        if (-not $file.StartsWith($script:project + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase) -or
+            -not ([IO.Path]::GetFullPath($destination)).StartsWith($script:build + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Auxiliary file archive path escaped the selected project.'
+        }
         [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
         Move-Item -LiteralPath $file -Destination $destination -ErrorAction Stop
     }
@@ -385,8 +517,7 @@ function Prepare-IncludeFolders {
     while ($stack.Count -gt 0) {
         $folder = $stack.Pop()
         foreach ($sub in @(Get-ChildItem -LiteralPath $folder -Directory -Force -ErrorAction Stop)) {
-            if ($sub.Name -in @('build', '.vscode', '.git', '.svn', '.hg', 'node_modules', '.venv', '原始笔记备份')) { continue }
-            if (($sub.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            if (Skip-Directory $sub) { continue }
             $rel = $sub.FullName.Substring($baseLen).TrimStart('\','/')
             [void][IO.Directory]::CreateDirectory((Join-Path $script:build $rel))
             $stack.Push($sub.FullName)
@@ -397,17 +528,16 @@ function Prepare-IncludeFolders {
 function Invoke-InitialCompilation {
     $outputPath = Join-Path $script:build 'setup-compile.stdout.log'
     $errorPath = Join-Path $script:build 'setup-compile.stderr.log'
-    $args = @(
+    $compileArguments = @(
         '-norc', '-pdfxe', '-e', '@out2_exts=(qw(pdf));$max_repeat=10;',
         '-outdir=build', '-out2dir=.', '-synctex=1',
         '-interaction=nonstopmode', '-file-line-error', '-halt-on-error',
-        '-g', 'main.tex'
+        '-g', ('./' + $script:mainName)
     )
-    # Every arg is ASCII without whitespace, so Windows PowerShell 5.1
-    # Start-Process argument joining cannot damage Unicode project paths.
+    # Quote the selected source name; filenames may contain spaces or Chinese.
     $launch = @{
         FilePath = $script:latexmk
-        ArgumentList = ($args -join ' ')
+        ArgumentList = (($compileArguments | ForEach-Object { Quote-NativeArgument $_ }) -join ' ')
         WorkingDirectory = $script:project
         Wait = $true
         PassThru = $true
@@ -428,49 +558,54 @@ function Invoke-InitialCompilation {
         }
         throw ('XeLaTeX test compilation failed (exit ' + $process.ExitCode + '). ' + $tail)
     }
-    foreach ($file in @('build\main.pdf', 'main.pdf', 'build\main.synctex.gz')) {
+    foreach ($file in @(('build/' + $script:jobName + '.pdf'),
+                        ($script:jobName + '.pdf'),
+                        ('build/' + $script:jobName + '.synctex.gz'))) {
         if (-not (Test-Path -LiteralPath (Join-Path $script:project $file) -PathType Leaf)) {
             throw ('Compile finished, but expected output was missing: ' + $file)
         }
     }
-    Write-Note 'Initial compile passed: main.pdf in project root; all aux/SyncTeX in build/.'
+    Write-Note ('Initial compile passed: ' + $script:jobName + '.pdf; auxiliary files in build/.')
 }
 
 $ok = $false
 $detail = ''
 try {
-    $script:stage = 'locating main.tex'
-    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) { throw 'Cannot determine script directory.' }
-    $script:project = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\','/')
-    if (-not (Test-Path -LiteralPath (Join-Path $script:project 'main.tex') -PathType Leaf)) {
-        throw ('main.tex not found next to this script: ' + $script:project)
-    }
+    $script:stage = 'locating LaTeX root document'
+    Select-Project
     $script:stage = 'creating or repairing build/'
     Ensure-BuildDirectory
-    $script:stage = 'checking and repairing TeX Live environment'
-    Check-TeXEnvironment
+    if (-not $CleanOnly) {
+        $script:stage = 'checking and repairing TeX Live environment'
+        Check-TeXEnvironment
+    }
     $script:stage = 'moving legacy auxiliary files into build/'
     $script:archiveCount = Move-StrayOutputs 'legacy'
     Write-Note ('Archived old aux files: ' + $script:archiveCount)
-    $script:stage = 'preparing include directories'
-    Prepare-IncludeFolders
-    $script:stage = 'repairing VS Code settings'
-    Update-Settings $script:project
-    # SAFETY: only write settings inside the project by default.
-    # Configure the parent explicitly only with LATEX_SETUP_PARENT_CONFIG=1.
-    if ($env:LATEX_SETUP_PARENT_CONFIG -eq '1') {
-        $parent = [IO.Directory]::GetParent($script:project)
-        if ($null -ne $parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($script:project)) {
-            Update-Settings $parent.FullName
+    if (-not $CleanOnly) {
+        $script:stage = 'preparing include directories'
+        Prepare-IncludeFolders
+        $script:stage = 'repairing VS Code settings'
+        Update-Settings $script:project
+        # Configure a parent workspace only when explicitly requested.
+        if ($env:LATEX_SETUP_PARENT_CONFIG -eq '1') {
+            $parent = [IO.Directory]::GetParent($script:project)
+            if ($null -ne $parent -and $parent.FullName -ne [IO.Path]::GetPathRoot($script:project)) {
+                Update-Settings $parent.FullName
+            }
         }
+        $script:stage = 'verifying first compile'
+        Invoke-InitialCompilation
     }
-    $script:stage = 'verifying first compile'
-    Invoke-InitialCompilation
     $script:stage = 'collecting stray files'
     $script:recoveredCount = Move-StrayOutputs 'recovered'
     Write-Note ('Recovered stray aux after compile: ' + $script:recoveredCount)
     $ok = $true
-    $detail = "初始化成功，已完成 XeLaTeX 编译验证。`n`n源文件目录：$script:project`nPDF：main.pdf`n辅助文件：build\`n已修复的 VS Code 配置：$($script:configPaths.Count) 处`n`n以后直接在 VS Code 中打开 main.tex，点击 LaTeX Workshop 编译，无需再次运行脚本。"
+    if ($CleanOnly) {
+        $detail = "清理完成。`n项目：$script:project`n主文件：$script:mainName`n已归档辅助文件：$script:archiveCount`n归档位置：build\legacy\"
+    } else {
+        $detail = "初始化与编译完成。`n项目：$script:project`n主文件：$script:mainName`nPDF：$script:jobName.pdf`n辅助文件：build\`n以后在 VS Code 中打开实际主文件即可编译。"
+    }
     if ($script:environmentNote) { $detail += "`n`n$script:environmentNote" }
 } catch {
     $detail = "初始化或编译失败。`n阶段：$script:stage`n原因：$($_.Exception.Message)"

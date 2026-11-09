@@ -6,12 +6,10 @@
 \usepackage{config/note-style}
 
 % ---------- 只需先修改以下信息 ----------
-\newcommand{\NoteTitle}{论文或学习笔记标题}
-\newcommand{\NoteSubtitle}{通用写作模板}
-\newcommand{\NoteAuthor}{作者姓名}
-\newcommand{\NoteInstitution}{学校或单位名称}
-\newcommand{\NoteCourse}{专业或课程名称}
-\newcommand{\NoteAdvisor}{指导教师姓名}
+\newcommand{\NoteTitle}{学习笔记}
+\newcommand{\NoteSubtitle}{课程与专题记录}
+\newcommand{\NoteAuthor}{笔记作者}
+\newcommand{\NoteCourse}{课程或主题}
 \newcommand{\NoteDate}{\today}
 
 % 没有引文时可改为 \notebibliographyfalse。
@@ -22,18 +20,19 @@
 \begin{document}
 \frontmatter
 \makenotetitle
-\input{chapters/正文/00-摘要.tex}
-\tableofcontents
+\compacttableofcontents
 \mainmatter
+\setcounter{chapter}{-1}
 
-% 正文：七章框架。按需修改标题、增删文件，并同步调整载入列表。
-\input{chapters/正文/01-绪论.tex}
-\input{chapters/正文/02-基础理论.tex}
-\input{chapters/正文/03-模型建立.tex}
-\input{chapters/正文/04-方法与推导.tex}
-\input{chapters/正文/05-结果与分析.tex}
-\input{chapters/正文/06-讨论与扩展.tex}
-\input{chapters/正文/07-总结与展望.tex}
+% 正文：按章节或学习主题增删，文件名与章节序号从 0 对齐。
+\input{chapters/正文/00-章节0.tex}
+\input{chapters/正文/01-章节1.tex}
+\input{chapters/正文/02-章节2.tex}
+\input{chapters/正文/03-章节3.tex}
+\input{chapters/正文/04-章节4.tex}
+\input{chapters/正文/05-章节5.tex}
+\input{chapters/正文/06-章节6.tex}
+\input{chapters/正文/07-章节7.tex}
 
 % 参考文献：只保留排版示例，使用时替换 references.bib。
 \ifnotebibliography

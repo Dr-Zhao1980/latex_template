@@ -4,15 +4,15 @@
     "latex-workshop.latex.recipe.default":  "first",
     "latex-workshop.latex.recipes":  [
                                          {
-                                             "name":  "XeLaTeX | main.tex | build/",
+                                             "name":  "XeLaTeX | detected root | build/",
                                              "tools":  [
-                                                           "latexmk-xelatex-main-clean"
+                                                           "latexmk-xelatex"
                                                        ]
                                          }
                                      ],
     "latex-workshop.latex.tools":  [
                                        {
-                                           "name":  "latexmk-xelatex-main-clean",
+                                           "name":  "latexmk-xelatex",
                                            "command":  "latexmk",
                                            "args":  [
                                                         "-norc",
@@ -25,8 +25,7 @@
                                                         "-interaction=nonstopmode",
                                                         "-file-line-error",
                                                         "-halt-on-error",
-                                                        "-g",
-                                                        "main.tex"
+                                                        "%DOC%"
                                                     ],
                                            "cwd":  "%DIR%",
                                            "env":  {
@@ -35,7 +34,7 @@
                                        }
                                    ],
     "latex-workshop.latex.build.fromFolder":  "",
-    "latex-workshop.latex.build.enableMagicComments":  false,
+    "latex-workshop.latex.build.enableMagicComments":  true,
     "latex-workshop.latex.rootFile.useSubFile":  false,
     "latex-workshop.latex.autoBuild.run":  "onSave",
     "latex-workshop.latex.autoClean.run":  "never",

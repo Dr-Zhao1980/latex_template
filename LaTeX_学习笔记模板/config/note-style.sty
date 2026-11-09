@@ -114,7 +114,10 @@
   \par\vspace{1.1em}
   {\centering\Large\bfseries\color{NoteNavy}目\quad 录\par}
   \vspace{0.7em}
-  \@starttoc{toc}%
+  \begingroup
+    \small\linespread{1}\selectfont
+    \@starttoc{toc}%
+  \endgroup
 }
 \makeatother
 
@@ -125,28 +128,16 @@
 \crefname{table}{表}{表}
 \crefname{section}{节}{节}
 
-% ----------------- 论文式封面 -----------------
+% ----------------- 笔记标题区：与目录共页 -----------------
 \newcommand{\makenotetitle}{%
-  \begin{titlepage}
-    \thispagestyle{empty}
-    \centering
-    \vspace*{0.08\textheight}
-    {\zihao{2}\NoteInstitution\par}
-    \vspace{2.5em}
-    {\zihao{1}\bfseries\NoteTitle\par}
-    \vspace{1.2em}
-    {\zihao{3}\NoteSubtitle\par}
-    \vspace{4em}
-    \renewcommand{\arraystretch}{1.8}
-    \begin{tabular}{rl}
-      作者： & \NoteAuthor\\
-      专业或课程： & \NoteCourse\\
-      指导教师： & \NoteAdvisor
-    \end{tabular}
-    \vfill
-    {\NoteDate\par}
-    \vspace*{0.05\textheight}
-  \end{titlepage}%
+  \thispagestyle{plain}
+  \begin{center}
+    {\zihao{2}\bfseries\NoteTitle\par}
+    \vspace{0.5em}
+    {\large\NoteSubtitle\par}
+    \vspace{0.6em}
+    {\small\NoteAuthor\quad\textbar\quad\NoteCourse\quad\textbar\quad\NoteDate\par}
+  \end{center}
 }
 
 % 附录一至四；节、公式、图表用“附1.1”等编号，与正文区分。
