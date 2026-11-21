@@ -1,0 +1,6 @@
+PASS: default main.tex selected among multiple roots without interaction
+PASS: moved project rebuilds; stale toolchain hint falls back to current PATH
+PASS: explicit TeXBin works with a minimal PATH, without changing system variables
+PASS: locked/read-only settings fail with diagnostics and preserve original bytes
+PASS: build-as-file is diagnosed and preserved
+ALL PASSED: 5 portability/permission groups

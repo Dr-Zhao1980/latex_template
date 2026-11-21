@@ -1,0 +1,1 @@
+PASS: all PowerShell syntax; identical BAT/PS1 payload; identical SH embedded runner; PS1 BOM and SH LF

@@ -1,0 +1,1 @@
+PASS: exact generated LaTeX Workshop command, cwd and arguments via Node spawn (no command placeholder expansion)

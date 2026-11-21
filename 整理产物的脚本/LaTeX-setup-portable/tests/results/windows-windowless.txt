@@ -1,0 +1,1 @@
+PASS: GUI PE subsystem; 120 visible-window samples found no new build/Shell window

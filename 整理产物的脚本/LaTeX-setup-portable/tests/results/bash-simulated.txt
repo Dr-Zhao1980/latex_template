@@ -1,0 +1,6 @@
+NOTE: flock is simulated; locking is not validated by this run.
+PASS: Bash standalone setup, output placement, settings, legacy archive (simulated TeX)
+PDF: /tmp/latex-bash-tests.sm7E2A2C/项目 空格(甲)/main.pdf
+PASS: Bash rebuild without installer/build; failure status and PDF preservation (simulated TeX)
+PASS: Bash clean and clean-all preserve published PDF and diagnostics (simulated TeX)
+ALL PASSED: 3 simulated Bash groups; native Linux/WSL validation still required

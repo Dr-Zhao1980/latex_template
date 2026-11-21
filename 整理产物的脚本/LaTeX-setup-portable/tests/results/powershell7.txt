@@ -1,0 +1,16 @@
+Workspace: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d
+PowerShell: 7.6.9
+OS: Microsoft Windows NT 10.0.26300.0
+setup-launcher exit code: 0
+Installed permanent runner: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\.vscode\build-latex.ps1
+Installed hidden launcher: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\.vscode\build-latex.vbs
+Configured permanent VS Code recipe: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\.vscode\settings.json
+setup-compile exit code: 0
+--- FINAL RESULT: PASS ---
+Stage: finished
+Reason: 操作成功：永久静默编译器已保存在 .vscode。模式：configure-only。PDF：
+Report log: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\build\setup-latex-status.log
+Diagnostic report: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\build\latex-diagnostic-report.txt
+Result: SUCCESS
+Full log: C:\Users\zzn16\AppData\Local\Temp\latex-pwsh-89ea1ec67e3b4813b9e01949f0c69b6d\build\setup-latex-status.log
+操作成功：永久静默编译器已保存在 .vscode。模式：configure-only。PDF：

@@ -1,0 +1,9 @@
+PASS: ps1/empty-project stayed alive before Enter, then exited with correct status
+PASS: ps1/bad-argument stayed alive before Enter, then exited with correct status
+PASS: ps1/success stayed alive before Enter, then exited with correct status
+PASS: bat/empty-project stayed alive before Enter, then exited with correct status
+PASS: bat/bad-argument stayed alive before Enter, then exited with correct status
+PASS: bat/success stayed alive before Enter, then exited with correct status
+PASS: bat/missing-powershell stayed alive before Enter, then exited with correct status
+PASS: bat/unpack-failed stayed alive before Enter, then exited with correct status
+ALL PASSED: 8 Enter/exit contract scenarios

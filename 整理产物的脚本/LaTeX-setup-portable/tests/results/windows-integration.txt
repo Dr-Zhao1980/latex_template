@@ -1,0 +1,16 @@
+PASS: ps1 standalone; real XeLaTeX/BibTeX/include/SyncTeX; JSONC and legacy preservation
+PASS: ps1 incremental build reuses PDF timestamp and publishes by atomic replacement
+PASS: ps1 repeat initialization repairs deleted components and preserves settings/user data
+PASS: ps1 permanent GUI launcher rebuilds without installers/build; root stays clean
+PASS: ps1 real TeX failure reaches GUI exit code and preserves last good PDF
+PASS: ps1 Windows PDF lock handled without damaging previous output
+PASS: ps1 clean/build mutual exclusion; both clean modes and rebuild after deep clean
+PASS: bat standalone; real XeLaTeX/BibTeX/include/SyncTeX; JSONC and legacy preservation
+PASS: bat incremental build reuses PDF timestamp and publishes by atomic replacement
+PASS: bat repeat initialization repairs deleted components and preserves settings/user data
+PASS: bat permanent GUI launcher rebuilds without installers/build; root stays clean
+PASS: bat real TeX failure reaches GUI exit code and preserves last good PDF
+PASS: bat Windows PDF lock handled without damaging previous output
+PASS: bat clean/build mutual exclusion; both clean modes and rebuild after deep clean
+ALL PASSED: 14 integration groups
+Fixtures: C:\Users\zzn16\AppData\Local\Temp\latex-portable-tests-7955d56a8b6b4a1885aefc1ef7e0f393

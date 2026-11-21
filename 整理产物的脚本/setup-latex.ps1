@@ -1,4 +1,12 @@
 ﻿#requires -Version 5.1
+# The outer guard also catches argument-binding errors before the core starts.
+$entryArguments = @($args)
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+$script:SetupExitCode = 1
+$skipFinalPrompt = ($env:LATEX_SETUP_NO_PAUSE -eq '1') -or ($env:LATEX_SETUP_BAT_OWNER -eq '1') -or ($entryArguments -contains '-NoPause')
+$setupCore = {
+# BEGIN SETUP CORE
+#requires -Version 5.1
 <#
  Portable LaTeX diagnostics / builder for Windows PowerShell 5.1+.
  No administrator rights, external modules, fixed TeX Live year, or main.tex required.
@@ -6,12 +14,17 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)][Alias('File')][string]$TexFile,
+    [Parameter(Position = 0)][Alias('File','MainFile')][string]$TexFile,
     [string]$ProjectRoot,
     [string]$TeXBin,
     [switch]$DiagnoseOnly,
     [switch]$NoSettings,
-    [switch]$NoPause
+    [switch]$NoPause,
+    [switch]$ConfigureOnly,
+    [switch]$CleanOnly,
+    [switch]$ProjectOnly,
+    [switch]$Elevate,
+    [ValidateSet('build','clean','clean-all')][string]$Mode = 'build'
 )
 
 Set-StrictMode -Version 2.0
@@ -65,6 +78,9 @@ function New-UniqueBackup([string]$PathText) {
 }
 function Initialize-Logs {
     $script:ReportDir = Join-Path $script:Workspace 'build'
+    if ((Test-Path -LiteralPath $script:ReportDir) -and ((Get-Item -LiteralPath $script:ReportDir -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'build must not be a symbolic link or junction.'
+    }
     if ((Test-Path -LiteralPath $script:ReportDir) -and -not (Test-Path -LiteralPath $script:ReportDir -PathType Container)) {
         throw "build exists but is not a directory: $script:ReportDir. Rename it before running."
     }
@@ -237,7 +253,8 @@ function Resolve-TeXTools([string]$Override) {
     foreach ($name in @('perl','kpsewhich','biber','bibtex','makeindex','tlmgr','xdvipdfmx')) {
         $cmd = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($cmd) { Add-Log ('Tool ' + $name + ': ' + $cmd.Source) }
-        elseif ($name -in @('perl','xdvipdfmx')) { Add-Warning ('A potentially required tool is not on PATH: ' + $name) }
+        elseif ($name -eq 'xdvipdfmx') { throw 'Required tool missing: xdvipdfmx. Install the dvipdfmx component in your TeX distribution.' }
+        elseif ($name -eq 'perl') { Add-Log 'No standalone Perl on PATH; TeX Live may use its bundled Perl. The real health check verifies latexmk.' }
         else { Add-Log ('Optional tool not found: ' + $name) }
     }
     $cmd = Get-Command 'kpsewhich' -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -252,8 +269,7 @@ function Resolve-TeXTools([string]$Override) {
     }
 }
 
-# Start-Process redirects both pipes directly to files; avoids command-line shell
-# injection, PowerShell 5.1 native redirection quirks, and output deadlocks.
+# ProcessStartInfo uses literal paths, hides native children and reads both pipes concurrently.
 function Invoke-CommandLogged([string]$Exe, [string[]]$ArgsList, [string]$WorkingDir, [string]$Prefix) {
     $outFile = Join-Path $script:ReportDir ($Prefix + '.stdout.log')
     $errFile = Join-Path $script:ReportDir ($Prefix + '.stderr.log')
@@ -270,9 +286,23 @@ function Invoke-CommandLogged([string]$Exe, [string[]]$ArgsList, [string]$Workin
         Wait = $true
         RedirectStandardOutput = $outFile
         RedirectStandardError = $errFile
+        WindowStyle = 'Hidden'
         ErrorAction = 'Stop'
     }
-    $process = Start-Process @start
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $Exe
+    $info.Arguments = $quoted -join ' '
+    $info.WorkingDirectory = $WorkingDir
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($info)
+    $outTask = $process.StandardOutput.ReadToEndAsync()
+    $errTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    [IO.File]::WriteAllText($outFile, $outTask.Result, $script:Encoding)
+    [IO.File]::WriteAllText($errFile, $errTask.Result, $script:Encoding)
     $script:LastLog = $outFile
     $script:CmdResults.Add(("$Prefix exit code: " + $process.ExitCode))
     Add-Log ("$Prefix exit code: " + $process.ExitCode)
@@ -331,7 +361,14 @@ function Test-MinimalXeLaTeX {
         }
         Add-Log '[OK] Minimal XeLaTeX compilation succeeded (isolated temporary document).'
     } finally {
-        try { Remove-Item -LiteralPath $temp -Force -Recurse -ErrorAction Stop }
+        try {
+            $resolvedTemp = [IO.Path]::GetFullPath($temp)
+            if (-not $resolvedTemp.StartsWith($script:ReportDir.TrimEnd('\')+'\',[StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe temporary cleanup path' }
+            for ($retry=0; ; $retry++) {
+                try { [IO.Directory]::Delete($resolvedTemp,$true); break }
+                catch { if ($retry -ge 4) { throw }; Start-Sleep -Milliseconds 200 }
+            }
+        }
         catch { Add-Warning ('Could not remove temporary test directory: ' + $temp) }
     }
 }
@@ -381,6 +418,8 @@ function Choose-Source([string]$ExplicitFile) {
         return $selected
     }
     $candidates = @(Get-TeXRootCandidates $script:Workspace)
+    $main = Join-Path $script:Workspace 'main.tex'
+    if ($candidates -contains $main) { return $main }
     if ($candidates.Count -eq 1) { return $candidates[0] }
     if ($candidates.Count -eq 0) {
         Add-Fix 'No .tex file found. Put your .tex document in the project directory, use -ProjectRoot, or specify -TexFile with its full path.'
@@ -389,15 +428,6 @@ function Choose-Source([string]$ExplicitFile) {
     Add-Log ('Found ' + $candidates.Count + ' possible root files:')
     for ($i=0; $i -lt $candidates.Count; $i++) { Add-Log ('  [' + ($i+1) + '] ' + $candidates[$i]) }
     if (-not $script:NoInteraction) {
-        try {
-            Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-            $chooser = New-Object System.Windows.Forms.OpenFileDialog
-            $chooser.Title = 'Select a LaTeX root .tex file (not a chapter)'
-            $chooser.InitialDirectory = $script:Workspace
-            $chooser.Filter = 'LaTeX source (*.tex)|*.tex'
-            $chooser.CheckFileExists = $true
-            if ($chooser.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { return $chooser.FileName }
-        } catch { Add-Warning ('Graphical file selector unavailable: ' + $_.Exception.Message) }
         while ($true) {
             $choice = Read-Host ('Choose a file [1-' + $candidates.Count + '] (Enter to cancel)')
             if (-not $choice) { break }
@@ -473,168 +503,307 @@ function ConvertFrom-JsonC([string]$InputText) {
 function Get-PersistentBuildRunnerContent {
     return @'
 #requires -Version 5.1
-<#
- Permanent LaTeX Workshop runner. Keep this file inside .vscode/.
- Works after the original setup BAT/PS1 files and build/ have been deleted.
- XeLaTeX -> build/; publish only the final PDF beside the source .tex.
-#>
 [CmdletBinding()]
 param(
-    [string]$MainFile,
+    [Alias('TexFile','File')][string]$MainFile,
     [string]$ProjectRoot,
-    [string]$TeXBin
+    [string]$TeXBin,
+    [ValidateSet('build','clean','clean-all')][string]$Mode = 'build',
+    [ValidateRange(1,600)][int]$LockTimeout = 120
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$utf8 = New-Object System.Text.UTF8Encoding($false)
-
-function Pick-Latexmk([string]$Hint) {
-    $bins = New-Object 'System.Collections.Generic.List[string]'
-    if ($Hint) { $bins.Add($Hint) }
-    foreach ($item in @('latexmk.exe','latexmk')) {
-        $found = Get-Command -Name $item -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($found) { $bins.Add([IO.Path]::GetDirectoryName($found.Source)) }
+$utf8 = New-Object Text.UTF8Encoding($false)
+$root = ''; $build = ''; $lock = $null; $proc = $null; $exitCode = 1; $ownsLock = $false; $processStarted = $false
+$script:Workspace = ''
+function Add-Log([string]$Text) { Write-Host $Text }
+function Get-AbsPath([string]$PathText, [string]$Base) {
+    if ([IO.Path]::IsPathRooted($PathText)) { return [IO.Path]::GetFullPath($PathText) }
+    return [IO.Path]::GetFullPath((Join-Path $Base $PathText))
+}
+function Find-TeXBins([string]$Override) {
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    $candidates = New-Object 'System.Collections.Generic.List[string]'
+    $candidateSeen = @{}
+    $exeNames = @('latexmk.exe', 'xelatex.exe', 'kpsewhich.exe')
+    function Add-Candidate([string]$p) {
+        if (-not $p -or $candidateSeen.ContainsKey($p.ToLowerInvariant())) { return }
+        $candidateSeen[$p.ToLowerInvariant()] = $true
+        $candidates.Add($p)
     }
-    foreach ($base in @($env:TEXLIVE_ROOT, $env:TEXDIR, 'D:\APPgallery\texlive\texlive',
-                       'C:\texlive','D:\texlive','E:\texlive')) {
-        if (-not $base -or -not (Test-Path -LiteralPath $base -PathType Container)) { continue }
-        $bins.Add($base)
-        $bins.Add((Join-Path $base 'bin\windows'))
-        foreach ($y in @(Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^20[0-9]{2}$' } | Sort-Object Name -Descending)) {
-            $bins.Add((Join-Path $y.FullName 'bin\windows'))
+    function Add-Found([string]$p) {
+        if (-not $p -or -not [IO.Directory]::Exists($p)) { return }
+        $k = $p.TrimEnd('\', '/').ToLowerInvariant()
+        if ($seen.ContainsKey($k)) { return }
+        foreach ($exe in $exeNames) {
+            if (Test-Path -LiteralPath (Join-Path $p $exe) -PathType Leaf) {
+                $seen[$k] = $true
+                $found.Add($p)
+                return
+            }
         }
     }
-    foreach ($bin in $bins) {
-        if (-not $bin) { continue }
-        $exe = Join-Path $bin 'latexmk.exe'
-        $xe = Join-Path $bin 'xelatex.exe'
-        if ((Test-Path -LiteralPath $exe -PathType Leaf) -and (Test-Path -LiteralPath $xe -PathType Leaf)) {
-            $env:Path = $bin + ';' + $env:Path
-            return $exe
+    if ($Override) {
+        $item = Get-AbsPath $Override $script:Workspace
+        if ([IO.File]::Exists($item)) { $item = [IO.Path]::GetDirectoryName($item) }
+        Add-Candidate $item
+        Add-Found $item
+    }
+    foreach ($exe in $exeNames) {
+        $cmd = Get-Command $exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cmd) { Add-Found ([IO.Path]::GetDirectoryName($cmd.Source)) }
+    }
+    $pathValues = @($env:Path, [Environment]::GetEnvironmentVariable('Path', 'User'),
+                    [Environment]::GetEnvironmentVariable('Path', 'Machine'))
+    foreach ($value in $pathValues) {
+        if (-not $value) { continue }
+        foreach ($entry in ($value -split ';')) {
+            $d = [Environment]::ExpandEnvironmentVariables($entry.Trim(' ', '"'))
+            if ($d) { Add-Found $d }
         }
     }
-    throw 'latexmk.exe / xelatex.exe not found. Check TeX Live and the -TeXBin argument in .vscode/settings.json.'
+    foreach ($name in @('TEXDIR','TEXLIVE_ROOT','TEXMFROOT','MIKTEX_INSTALL')) {
+        $v = [Environment]::GetEnvironmentVariable($name)
+        if ($v) { Add-Candidate ([Environment]::ExpandEnvironmentVariables($v)) }
+    }
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA, $env:USERPROFILE)) {
+        if ($root) { Add-Candidate $root }
+    }
+    foreach ($drive in @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue)) {
+        if ($drive.Root) { Add-Candidate $drive.Root }
+    }
+    # If both executables are already found together, a deep scan is unnecessary.
+    foreach ($bin in $found) {
+        if ((Test-Path -LiteralPath (Join-Path $bin 'latexmk.exe') -PathType Leaf) -and
+            (Test-Path -LiteralPath (Join-Path $bin 'xelatex.exe') -PathType Leaf)) {
+            Add-Log ('Found full toolchain on PATH/in an explicit directory: ' + $bin)
+            return $found.ToArray()
+        }
+    }
+    # Prioritized depth-first search prevents huge Program Files trees from
+    # exhausting the budget before a nested drive install (APP/texlive/year/bin).
+    $stack = New-Object 'System.Collections.Generic.Stack[object]'
+    for ($i = $candidates.Count - 1; $i -ge 0; $i--) {
+        $candidate = $candidates[$i]
+        if ([IO.Directory]::Exists($candidate)) { $stack.Push(@{ P = $candidate; Depth = 0; Relevant = $false }) }
+    }
+    $visited = @{}
+    $inspected = 0
+    while ($stack.Count -gt 0 -and $inspected -lt 650) {
+        $n = $stack.Pop()
+        $dir = [string]$n.P
+        $depth = [int]$n.Depth
+        $related = [bool]$n.Relevant
+        $key = $dir.TrimEnd('\','/').ToLowerInvariant()
+        if ($visited.ContainsKey($key)) { continue }
+        $visited[$key] = $true
+        $inspected++
+        Add-Found $dir
+        foreach ($bin in $found) {
+            if ((Test-Path -LiteralPath (Join-Path $bin 'latexmk.exe') -PathType Leaf) -and
+                (Test-Path -LiteralPath (Join-Path $bin 'xelatex.exe') -PathType Leaf)) {
+                Add-Log ('Found complete TeX toolchain in ' + $bin)
+                return $found.ToArray()
+            }
+        }
+        if ($depth -gt 8) { continue }
+        $subDirs = @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction SilentlyContinue)
+        # Favor likely software directories and only explore deep within them.
+        $subDirs = @($subDirs | Sort-Object @{Expression={ if ($_.Name -match '(?i)tex|mik|app|soft|program|tool|portable|install|bin|^[0-9]{4}$') { 0 } else { 1 } }}, Name)
+        $filteredKids = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($sub in $subDirs) {
+            if ($filteredKids.Count -ge 110) { break }
+            if (($sub.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            if ($sub.Name -match '^(?i:programdata|system volume information|\$recycle.bin|node_modules|\.git|\.cache|\.venv)$') { continue }
+            if ($depth -eq 0 -and $sub.Name -match '^(?i:windows|winnt|users)$') { continue }
+            $looksRelevant = $sub.Name -match '(?i)tex|mik|app|soft|program|tool|portable|install|bin|^[0-9]{4}$|^x64$|^windows$'
+            if (-not ($related -or $looksRelevant)) { continue }
+            if ($depth -ge 8) { continue }
+            $filteredKids.Add($sub)
+        }
+        for ($i = $filteredKids.Count - 1; $i -ge 0; $i--) {
+            $sub = $filteredKids[$i]
+            $stack.Push(@{ P = $sub.FullName; Depth = $depth + 1; Relevant = $true })
+        }
+    }
+    Add-Log ("Scanned $inspected candidate directories; found $($found.Count) TeX executable directories.")
+    return $found.ToArray()
 }
 
-function Make-IncludeFolders([string]$Root, [string]$Build) {
-    $todo = New-Object 'System.Collections.Generic.Stack[object]'
-    $todo.Push(@{ Path = $Root; Depth = 0 })
-    $seen = 0
-    $prefix = $Root.TrimEnd('\','/').Length
-    while ($todo.Count -gt 0 -and $seen -lt 600) {
-        $task = $todo.Pop()
-        if ($task.Depth -ge 7) { continue }
-        foreach ($dir in @(Get-ChildItem -LiteralPath $task.Path -Directory -Force -ErrorAction SilentlyContinue)) {
-            if ($dir.Name -match '^(?i:build|\.vscode|\.git|\.svn|\.hg|node_modules|\.venv|venv|dist|target|\.idea|_minted.*)$') { continue }
-            if (($dir.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-            $rel = $dir.FullName.Substring($prefix).TrimStart('\','/')
-            if ($rel) { [void][IO.Directory]::CreateDirectory((Join-Path $Build $rel)) }
-            $todo.Push(@{ Path = $dir.FullName; Depth = $task.Depth + 1 })
-            $seen++
-            if ($seen -ge 600) { break }
+function Assert-LocalDirectory([string]$Path) {
+    if (Test-Path -LiteralPath $Path) {
+        $item = Get-Item -LiteralPath $Path -Force
+        if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe output/configuration directory (file or junction/symlink): $Path"
         }
+    } else { [void][IO.Directory]::CreateDirectory($Path) }
+}
+function Get-SafeFiles([string]$Directory) {
+    foreach ($item in @(Get-ChildItem -LiteralPath $Directory -Force)) {
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { continue }
+        if ($item.PSIsContainer) {
+            if ($item.Name -notmatch '^(build|legacy|settings-backups|\.vscode|\.git|node_modules|\.venv)$') { Get-SafeFiles $item.FullName }
+        } else { $item }
     }
 }
-
-function Archive-OldAux([string]$Root, [string]$Build, [string]$Stem) {
-    $escaped = [regex]::Escape($Stem)
-    $suffix = '(aux|log|out|toc|synctex\.gz|synctex|fls|fdb_latexmk|xdv|dvi|ps|bbl|bcf|blg|run\.xml|lof|lot|lol|nav|snm|vrb|idx|ind|ilg|acn|acr|alg|glg|glo|gls|ist|nlo|nls|thm|maf|mtc|mtc0|spl|brf)'
-    $matcher = '^(?i:' + $escaped + ')\.' + $suffix + '$'
-    $folder = Join-Path (Join-Path $Build 'legacy') (Get-Date -Format 'yyyyMMdd-HHmmss-fff')
-    foreach ($f in @(Get-ChildItem -LiteralPath $Root -File -Force -ErrorAction SilentlyContinue)) {
-        if ($f.Name -notmatch $matcher) { continue }
+function Archive-Legacy {
+    $folder = Join-Path $build ('legacy/' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N'))
+    foreach ($file in @(Get-SafeFiles $root)) {
+        # .log/.out/.ps/.ist can be user data; only migrate those with a matching TeX source.
+        $match = [regex]::Match($file.Name, '^(.*)\.(aux|log|out|toc|synctex(?:\.gz)?|fls|fdb_latexmk|xdv|bbl|bcf|blg|run\.xml|lof|lot|nav|snm|vrb|idx|ind|ilg)$', 'IgnoreCase')
+        if (-not $match.Success) { continue }
+        if ($match.Groups[2].Value -match '^(log|out)$' -and -not (Test-Path -LiteralPath (Join-Path $file.DirectoryName ($match.Groups[1].Value + '.tex')))) { continue }
+        $rel = $file.FullName.Substring($root.TrimEnd('\').Length + 1)
+        $destination = Join-Path $folder $rel
         try {
-            [void][IO.Directory]::CreateDirectory($folder)
-            $target = Join-Path $folder $f.Name
-            $n = 0
-            while (Test-Path -LiteralPath $target) { $n++; $target = Join-Path $folder ($f.Name + '.' + $n) }
-            Move-Item -LiteralPath $f.FullName -Destination $target -ErrorAction Stop
-            Write-Host ('Archived old root auxiliary: ' + $f.Name)
-        } catch {
-            Write-Warning ('Cannot archive in-use file ' + $f.Name + ': ' + $_.Exception.Message)
-        }
+            [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+            [IO.File]::Move($file.FullName, $destination)
+        } catch { Write-Warning ("Cannot archive $($file.FullName): " + $_.Exception.Message) }
     }
 }
-
-$exitCode = 1
+function Invoke-Latexmk([string]$Executable, [string[]]$Arguments) {
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $Executable
+    # Every argument is quoted. Backslashes before a closing quote follow the Windows CRT rules.
+    $info.Arguments = (($Arguments | ForEach-Object { '"' + [regex]::Replace($_, '(\\*)"', '$1$1\"').TrimEnd('\') + ('\' * (2 * ($_.Length - $_.TrimEnd('\').Length))) + '"' }) -join ' ')
+    $info.WorkingDirectory = $root
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $script:proc = New-Object Diagnostics.Process
+    $script:proc.StartInfo = $info
+    [void]$script:proc.Start()
+    $script:processStarted = $true
+    $outTask = $script:proc.StandardOutput.ReadToEndAsync()
+    $errTask = $script:proc.StandardError.ReadToEndAsync()
+    $script:proc.WaitForExit()
+    [IO.File]::WriteAllText((Join-Path $build 'latexmk.stdout.log'), $outTask.Result, $utf8)
+    [IO.File]::WriteAllText((Join-Path $build 'latexmk.stderr.log'), $errTask.Result, $utf8)
+    return $script:proc.ExitCode
+}
 try {
     if (-not $ProjectRoot) { $ProjectRoot = [IO.Directory]::GetParent($PSScriptRoot).FullName }
     $root = [IO.Path]::GetFullPath($ProjectRoot)
+    $configPath = Join-Path $root '.vscode/latex-project.json'
+    if (Test-Path -LiteralPath $configPath) {
+        $config = [IO.File]::ReadAllText($configPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+        if (-not $MainFile) { $MainFile = $config.mainFile }
+        if (-not $TeXBin) { $TeXBin = $config.texBin }
+    }
     if (-not $MainFile) { $MainFile = 'main.tex' }
-    $source = if ([IO.Path]::IsPathRooted($MainFile)) { [IO.Path]::GetFullPath($MainFile) } else { [IO.Path]::GetFullPath((Join-Path $root $MainFile)) }
-    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw ('LaTeX source missing: ' + $source) }
-    # Compile in the document's own directory, regardless of the VS Code workspace.
-    $root = [IO.Path]::GetDirectoryName($source)
-    $stem = [IO.Path]::GetFileNameWithoutExtension($source)
-    $leaf = [IO.Path]::GetFileName($source)
+    if (-not $MainFile.EndsWith('.tex',[StringComparison]::OrdinalIgnoreCase)) { $MainFile += '.tex' }
+    $source = Get-AbsPath $MainFile $root
+    if ($Mode -eq 'build' -and -not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing TeX source: $source" }
+    if ([IO.Path]::GetDirectoryName($source) -ine $root) { throw 'MainFile must be in ProjectRoot; initialize the root document directory.' }
+    $script:Workspace = $root
     $build = Join-Path $root 'build'
-    if ((Test-Path -LiteralPath $build) -and -not (Test-Path -LiteralPath $build -PathType Container)) {
-        throw ('A file named build blocks the output folder: ' + $build)
-    }
-    [void][IO.Directory]::CreateDirectory($build)
-    $stdout = Join-Path $build 'latexmk.stdout.log'
-    $stderr = Join-Path $build 'latexmk.stderr.log'
-    $latexmk = Pick-Latexmk $TeXBin
-    Make-IncludeFolders $root $build
-    Archive-OldAux $root $build $stem
-    $src = if ($leaf.StartsWith('-')) { '.\' + $leaf } else { $leaf }
-    $arg = @('-norc','-pdfxe','-synctex=1','-interaction=nonstopmode','-file-line-error',
-             '-halt-on-error','-outdir=build','-auxdir=build',$src)
-    # Quote arguments only if required (PowerShell 5.1 Start-Process takes a command-line string).
-    $cmdline = (($arg | ForEach-Object { if ($_ -match '[\s"]') { '"' + $_.Replace('"','\"') + '"' } else { $_ } }) -join ' ')
-    Write-Host ('[CleanBuild] Compiling: ' + $source)
-    Write-Host ('[CleanBuild] Working directory: ' + $root)
-    $start = @{
-        FilePath = $latexmk
-        ArgumentList = $cmdline
-        WorkingDirectory = $root
-        Wait = $true
-        PassThru = $true
-        RedirectStandardOutput = $stdout
-        RedirectStandardError = $stderr
-        NoNewWindow = $true
-        ErrorAction = 'Stop'
-    }
-    $proc = Start-Process @start
-    Archive-OldAux $root $build $stem
-    $builtPdf = Join-Path $build ($stem + '.pdf')
-    $rootPdf = Join-Path $root ($stem + '.pdf')
-    if ($proc.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $builtPdf -PathType Leaf)) {
-        foreach ($logPath in @($stdout, $stderr)) {
-            if (Test-Path -LiteralPath $logPath -PathType Leaf) {
-                Get-Content -LiteralPath $logPath -Tail 35 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ }
+    Assert-LocalDirectory (Join-Path $root '.vscode')
+    # Lock outside build/: deleting build/ cannot change the lock identity.
+    $lockPath = Join-Path $root '.vscode/.latex-operation.lock'
+    if ((Test-Path -LiteralPath $lockPath) -and ((Get-Item -LiteralPath $lockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Lock file must not be a symlink.' }
+    $deadline = [DateTime]::UtcNow.AddSeconds($LockTimeout)
+    do {
+        try { $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { $exitCode = 75; throw 'Another build/setup/clean is running (lock timeout).' }
+            Start-Sleep -Milliseconds 150
+        }
+    } until ($null -ne $lock)
+    $ownsLock = $true
+    Assert-LocalDirectory $build
+    # Exercise create/read/modify/delete, rather than trusting read-only directory attributes.
+    $probe = Join-Path $build ('.permission-' + [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllText($probe, 'write', $utf8)
+    [IO.File]::AppendAllText($probe, 'modify', $utf8)
+    [void][IO.File]::ReadAllText($probe)
+    [IO.File]::Delete($probe)
+    Archive-Legacy
+    $stem = [IO.Path]::GetFileNameWithoutExtension($source)
+    if ($Mode -ne 'build') {
+        $failed = $false
+        foreach ($file in @(Get-SafeFiles $build)) {
+            if ($file.Name -match '^(setup-|latexmk\.|last-build-status|last-clean-status|latex-diagnostic)' -or $file.Name -like '*.tex' -or $file.Name -like '*.bib') { continue }
+            $known = $file.Name -match '\.(aux|out|toc|synctex(?:\.gz)?|fls|fdb_latexmk|xdv|dvi|bbl|bcf|blg|run\.xml|lof|lot|lol|nav|snm|vrb|idx|ind|ilg|acn|acr|alg|glg|glo|gls|nlo|nls|thm|maf|mtc\d*|spl|brf)$'
+            if ($Mode -eq 'clean-all' -and $file.Name -match '\.(pdf|log)$') { $known = $true }
+            if ($known) {
+                try { [IO.File]::Delete($file.FullName) }
+                catch { $failed = $true; Write-Warning ("Cannot clean $($file.FullName): " + $_.Exception.Message) }
             }
         }
-        throw ('LaTeX compilation failed (' + $proc.ExitCode + '). Check ' + $stdout)
-    }
-    # Keep the final PDF visible at the project root; never publish auxiliary files.
-    # Republish even if build/main.pdf was already up-to-date but root/main.pdf was deleted.
-    [IO.File]::Copy($builtPdf, $rootPdf, $true)
-    # This status file lives in build/ only. Do not generate a root-level log.
-    [IO.File]::WriteAllText((Join-Path $build 'last-build-status.txt'),
-        ('SUCCESS ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + [Environment]::NewLine +
-         'PDF: ' + $rootPdf + [Environment]::NewLine), $utf8)
-    Write-Host ('[CleanBuild] PDF: ' + $rootPdf)
-    Write-Host ('[CleanBuild] Auxiliary files: ' + $build)
-    $exitCode = 0
-} catch {
-    # Preserve the last successfully published PDF and persist the error silently.
-    $message = $_.Exception.Message
-    try {
-        $logRoot = if ($build) { $build } elseif ($root) { Join-Path $root 'build' } else { $null }
-        if ($logRoot) {
-            [void][IO.Directory]::CreateDirectory($logRoot)
-            [IO.File]::WriteAllText((Join-Path $logRoot 'last-build-status.txt'),
-                ('FAILED ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + [Environment]::NewLine +
-                 $message + [Environment]::NewLine +
-                 'Inspect latexmk.stdout.log, latexmk.stderr.log, and the TeX .log file.' + [Environment]::NewLine), $utf8)
+        if ($failed) { throw 'Some generated files are locked or access was denied. Close readers and retry.' }
+        [IO.File]::WriteAllText((Join-Path $build 'last-clean-status.txt'), "SUCCESS $Mode $(Get-Date -Format s)", $utf8)
+        $exitCode = 0
+    } else {
+        $directories = New-Object 'System.Collections.Generic.Stack[string]'
+        $directories.Push($build)
+        while ($directories.Count -gt 0) {
+            foreach ($item in @(Get-ChildItem -LiteralPath $directories.Pop() -Force)) {
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw ('Output tree contains a symlink/junction: ' + $item.FullName) }
+                if ($item.PSIsContainer) { $directories.Push($item.FullName) }
+            }
         }
-    } catch { }
-    Write-Host ('[CleanBuild ERROR] ' + $message)
-    $exitCode = 1
+        $bins = @(Find-TeXBins $TeXBin)
+        $bin = $bins | Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_ 'latexmk.exe')) -and
+            (Test-Path -LiteralPath (Join-Path $_ 'xelatex.exe')) -and
+            (Test-Path -LiteralPath (Join-Path $_ 'xdvipdfmx.exe'))
+        } | Select-Object -First 1
+        if (-not $bin) { throw 'Need latexmk, xelatex and xdvipdfmx. Install TeX Live or specify -TeXBin. No system changes were made.' }
+        $env:Path = $bin + ';' + $env:Path
+        # Mirror directories for auxiliary files written by \include{chapters/part}.
+        foreach ($file in @(Get-SafeFiles $root | Where-Object Extension -eq '.tex')) {
+            $rel = $file.DirectoryName.Substring($root.Length).TrimStart('\','/')
+            if ($rel) { Assert-LocalDirectory (Join-Path $build $rel) }
+        }
+        $arguments = @('-norc','-pdfxe','-synctex=1','-interaction=nonstopmode','-halt-on-error','-file-line-error','-outdir=build','-auxdir=build', ('./' + [IO.Path]::GetFileName($source)))
+        $code = Invoke-Latexmk (Join-Path $bin 'latexmk.exe') $arguments
+        if ($code -ne 0) { $exitCode = $code; throw "latexmk failed (exit $code). See build/latexmk.stdout.log and stderr.log." }
+        $built = Join-Path $build ($stem + '.pdf')
+        if (-not (Test-Path -LiteralPath $built) -or (Get-Item -LiteralPath $built).Length -lt 5) { throw "Missing/empty PDF: $built" }
+        # Stage in build/ and atomically replace the published PDF on the same volume.
+        $destination = Join-Path $root ($stem + '.pdf')
+        $stage = Join-Path $build ('.publish-' + [guid]::NewGuid().ToString('N') + '.pdf')
+        try {
+            [IO.File]::Copy($built, $stage)
+            for ($attempt = 0; ; $attempt++) {
+                try {
+                    if (Test-Path -LiteralPath $destination) { [IO.File]::Replace($stage, $destination, [System.Management.Automation.Language.NullString]::Value) }
+                    else { [IO.File]::Move($stage, $destination) }
+                    break
+                } catch [IO.IOException] { if ($attempt -ge 4) { throw }; Start-Sleep -Milliseconds 200 }
+            }
+        } finally { if (Test-Path -LiteralPath $stage) { [IO.File]::Delete($stage) } }
+        $exitCode = 0
+        [IO.File]::WriteAllText((Join-Path $build 'last-build-status.txt'), "SUCCESS $(Get-Date -Format s)`nPDF: $destination", $utf8)
+        Write-Host "PDF: $destination"
+    }
+} catch {
+    $message = $_.Exception.Message
+    if ($exitCode -eq 0) { $exitCode = 1 }
+    if ($ownsLock -and [IO.Directory]::Exists($build)) {
+        try {
+            $statusName = if ($Mode -eq 'build') { 'last-build-status.txt' } else { 'last-clean-status.txt' }
+            [IO.File]::WriteAllText((Join-Path $build $statusName), "FAILED exit=$exitCode $(Get-Date -Format s)`n$message", $utf8)
+        } catch { }
+    }
+    Write-Host "ERROR: $message"
+} finally {
+    if ($null -ne $proc) {
+        if ($processStarted -and -not $proc.HasExited) {
+            # Stop only this runner's child tree before releasing the project lock.
+            $killInfo = New-Object Diagnostics.ProcessStartInfo
+            $killInfo.FileName = Join-Path $env:SystemRoot 'System32/taskkill.exe'
+            $killInfo.Arguments = '/PID ' + $proc.Id + ' /T /F'
+            $killInfo.UseShellExecute = $false; $killInfo.CreateNoWindow = $true
+            $killer = [Diagnostics.Process]::Start($killInfo); $killer.WaitForExit(); $killer.Dispose()
+        }
+        $proc.Dispose()
+    }
+    if ($null -ne $lock) { $lock.Dispose() }
 }
 exit $exitCode
-
 '@
 }
 
@@ -684,28 +853,96 @@ End Function
 '@
 }
 
+function Install-HiddenExecutable {
+    $source = @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+internal static class HiddenLatexLauncher {
+    private static string Quote(string value) {
+        StringBuilder result = new StringBuilder("\"");
+        int slashes = 0;
+        foreach (char c in value) {
+            if (c == '\\') { slashes++; continue; }
+            if (c == '"') { result.Append('\\', slashes * 2 + 1).Append(c); }
+            else { result.Append('\\', slashes).Append(c); }
+            slashes = 0;
+        }
+        return result.Append('\\', slashes * 2).Append('"').ToString();
+    }
+    [STAThread]
+    private static int Main(string[] args) {
+        string root = Path.GetFullPath(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ".."));
+        try {
+            if (args.Length > 1) root = Path.GetFullPath(args[1]);
+            string script = Path.Combine(root, ".vscode", "build-latex.ps1");
+            string ps = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+            string command = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script) + " -ProjectRoot " + Quote(root);
+            if (args.Length > 0 && args[0].Length != 0) command += " -MainFile " + Quote(args[0]);
+            if (args.Length > 2 && args[2].Length != 0) command += " -TeXBin " + Quote(args[2]);
+            if (args.Length > 3) command += " -Mode " + Quote(args[3]);
+            ProcessStartInfo info = new ProcessStartInfo(ps, command);
+            info.WorkingDirectory = root;
+            info.UseShellExecute = false;
+            info.CreateNoWindow = true;
+            info.WindowStyle = ProcessWindowStyle.Hidden;
+            using (Process process = Process.Start(info)) {
+                process.WaitForExit();
+                return process.ExitCode;
+            }
+        } catch (Exception error) {
+            try {
+                string build = Path.Combine(root, "build");
+                Directory.CreateDirectory(build);
+                File.AppendAllText(Path.Combine(build, "launcher-error.log"), DateTime.Now.ToString("s") + " " + error + Environment.NewLine);
+            } catch { }
+            return 1;
+        }
+    }
+}
+'@
+    $exe = Join-Path $script:Workspace '.vscode/build-latex.exe'
+    $sourcePath = Join-Path $script:Workspace '.vscode/hidden-launcher.cs'
+    if ((Test-Path -LiteralPath $exe) -and (Test-Path -LiteralPath $sourcePath) -and [IO.File]::ReadAllText($sourcePath) -eq $source) { return }
+    $tempExe = Join-Path $script:ReportDir ('launcher-' + [guid]::NewGuid().ToString('N') + '.exe')
+    try {
+        $compiler = Join-Path $env:SystemRoot 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        if (-not (Test-Path -LiteralPath $compiler)) { $compiler = Join-Path $env:SystemRoot 'Microsoft.NET/Framework/v4.0.30319/csc.exe' }
+        $tempSource = Join-Path $script:ReportDir ('launcher-' + [guid]::NewGuid().ToString('N') + '.cs')
+        [IO.File]::WriteAllText($tempSource, $source, $script:Encoding)
+        $rc = Invoke-CommandLogged $compiler @('/nologo','/target:winexe',('/out:' + $tempExe),$tempSource) $script:Workspace 'setup-launcher'
+            if ($rc -ne 0 -or -not (Test-Path -LiteralPath $tempExe)) { throw 'Could not compile the hidden .NET launcher. See build/setup-launcher.stderr.log.' }
+        [IO.File]::Copy($tempExe, $exe, $true)
+        [IO.File]::WriteAllText($sourcePath, $source, $script:Encoding)
+    } finally {
+        if (Test-Path -LiteralPath $tempExe) { [IO.File]::Delete($tempExe) }
+        if ($tempSource -and (Test-Path -LiteralPath $tempSource)) { [IO.File]::Delete($tempSource) }
+    }
+}
 function Install-PersistentBuildRunner([string]$RootDir) {
     $vsDir = Join-Path $RootDir '.vscode'
     [void][IO.Directory]::CreateDirectory($vsDir)
+    Install-HiddenExecutable
     $runnerPath = Join-Path $vsDir 'build-latex.ps1'
     $text = (Get-PersistentBuildRunnerContent).TrimStart("`r", "`n")
     if (-not $text.EndsWith("`n")) { $text += "`n" }
     $text = $text.Replace("`r`n", "`n")
     $existing = if (Test-Path -LiteralPath $runnerPath -PathType Leaf) { [IO.File]::ReadAllText($runnerPath, [Text.Encoding]::UTF8) } else { $null }
-    if ($existing -eq $text) { Add-Log ('Permanent runner unchanged: ' + $runnerPath); return }
-    if ($null -ne $existing) {
+    # Always check all components even when the PS1 is already current.
+    if ($null -ne $existing -and $existing -ne $text) {
         $archive = Join-Path $script:ReportDir 'settings-backups'
         [void][IO.Directory]::CreateDirectory($archive)
         $bak = New-UniqueBackup (Join-Path $archive 'build-latex.ps1')
-        Copy-Item -LiteralPath $runnerPath -Destination $bak -ErrorAction Stop
+        [IO.File]::Copy($runnerPath, $bak)
     }
     $temp = Join-Path $script:ReportDir ('runner-' + [guid]::NewGuid().ToString('N') + '.tmp')
     try {
         # UTF-8 BOM ensures Windows PowerShell 5.1 handles future Chinese comments or paths.
         $enc = New-Object System.Text.UTF8Encoding($true)
         [IO.File]::WriteAllText($temp, $text, $enc)
-        Copy-Item -LiteralPath $temp -Destination $runnerPath -Force -ErrorAction Stop
-    } finally { if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force } }
+        if ($existing -ne $text) { [IO.File]::Copy($temp, $runnerPath, $true) }
+    } finally { if (Test-Path -LiteralPath $temp) { [IO.File]::Delete($temp) } }
     Add-Log ('Installed permanent runner: ' + $runnerPath)
     $vbsPath = Join-Path $vsDir 'build-latex.vbs'
     $vbsText = (Get-HiddenBuildLauncherContent).Replace("`r`n", "`n").Replace("`n", "`r`n")
@@ -717,15 +954,15 @@ function Install-PersistentBuildRunner([string]$RootDir) {
             $backupFolder = Join-Path $script:ReportDir 'settings-backups'
             [void][IO.Directory]::CreateDirectory($backupFolder)
             $backupVbs = New-UniqueBackup (Join-Path $backupFolder 'build-latex.vbs')
-            Copy-Item -LiteralPath $vbsPath -Destination $backupVbs -ErrorAction Stop
+            [IO.File]::Copy($vbsPath, $backupVbs)
         }
         # ASCII-only VBS avoids Windows Script Host encoding ambiguity.
         $tempVbs = Join-Path $script:ReportDir ('launcher-' + [guid]::NewGuid().ToString('N') + '.tmp')
         try {
             [IO.File]::WriteAllText($tempVbs, $vbsText, [Text.Encoding]::ASCII)
-            Copy-Item -LiteralPath $tempVbs -Destination $vbsPath -Force -ErrorAction Stop
+            [IO.File]::Copy($tempVbs, $vbsPath, $true)
         } finally {
-            if (Test-Path -LiteralPath $tempVbs -PathType Leaf) { Remove-Item -LiteralPath $tempVbs -Force }
+            if (Test-Path -LiteralPath $tempVbs -PathType Leaf) { [IO.File]::Delete($tempVbs) }
         }
         Add-Log ('Installed hidden launcher: ' + $vbsPath)
     } else { Add-Log ('Hidden launcher unchanged: ' + $vbsPath) }
@@ -750,19 +987,17 @@ function Update-VSCodeConfig([string]$ConfigRoot) {
             }
         }
     }
-    # Windows Script Host (GUI subsystem) does not create a console window.
-    # The permanent .vbs invokes the permanent .ps1 invisibly and waits for its exit code.
+    # The GUI-subsystem .exe starts the permanent .ps1 without a console and waits for its exit code.
     # %DIR% denotes the actual root .tex directory even if a parent workspace is opened.
     $tool = [ordered]@{
         name = 'permanent-silent-xelatex'
-        command = 'wscript.exe'
-        args = @('//B','//Nologo', '%DIR%/.vscode/build-latex.vbs',
-                 '%DOC_EXT%', '%DIR%', $script:DetectedBin)
+        command = './.vscode/build-latex.exe'
+        args = @('%DOC_EXT%', '%DIR%')
         cwd = '%DIR%'
     }
     $settings['latex-workshop.latex.tools'] = @($tool)
     $settings['latex-workshop.latex.recipes'] = @([ordered]@{
-        name='XeLaTeX | silent clean build + root PDF'; tools=@('permanent-silent-xelatex')
+        name='XeLaTeX | silent build + root PDF'; tools=@('permanent-silent-xelatex')
     })
     # The *published* PDF is next to main.tex, while latexmk cache stays in build/.
     # LaTeX Workshop previews build/main.pdf beside its build/main.synctex.gz.
@@ -788,16 +1023,39 @@ function Update-VSCodeConfig([string]$ConfigRoot) {
             [void][IO.Directory]::CreateDirectory($backupDir)
             $suffix = if ($ConfigRoot -ieq $script:Workspace) { 'project' } else { 'parent-workspace' }
             $backup = New-UniqueBackup (Join-Path $backupDir ($suffix + '-settings.json'))
-            Copy-Item -LiteralPath $path -Destination $backup -ErrorAction Stop
+            [IO.File]::Copy($path, $backup)
             Add-Log ('VS Code settings backup: ' + $backup)
         }
         $tmpPath = Join-Path $script:ReportDir ('settings-' + [guid]::NewGuid().ToString('N') + '.tmp')
         try {
             [IO.File]::WriteAllText($tmpPath, $json, $script:Encoding)
-            Copy-Item -LiteralPath $tmpPath -Destination $path -Force -ErrorAction Stop
-        } finally { if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force } }
+            [IO.File]::Copy($tmpPath, $path, $true)
+        } finally { if (Test-Path -LiteralPath $tmpPath) { [IO.File]::Delete($tmpPath) } }
     }
     Add-Log ('Configured permanent VS Code recipe: ' + $path)
+    $extensionPath = Join-Path $vsDir 'extensions.json'
+    try {
+        $extensions = [ordered]@{}
+        if (Test-Path -LiteralPath $extensionPath) {
+            $parsedExtensions = ConvertFrom-JsonC ([IO.File]::ReadAllText($extensionPath))
+            if ($parsedExtensions -isnot [pscustomobject]) { throw 'extensions.json must contain an object' }
+            foreach ($property in $parsedExtensions.PSObject.Properties) { $extensions[$property.Name] = $property.Value }
+        }
+        $recommendations = @()
+        if ($extensions.Contains('recommendations')) { $recommendations = @($extensions['recommendations']) }
+        if ($recommendations -notcontains 'James-Yu.latex-workshop') {
+            $extensions['recommendations'] = @($recommendations) + @('James-Yu.latex-workshop')
+            if (Test-Path -LiteralPath $extensionPath) {
+                $backupDir = Join-Path $script:ReportDir 'settings-backups'
+                [void][IO.Directory]::CreateDirectory($backupDir)
+                [IO.File]::Copy($extensionPath,(New-UniqueBackup (Join-Path $backupDir 'extensions.json')))
+            }
+            [IO.File]::WriteAllText($extensionPath,(ConvertTo-Json $extensions -Depth 30),$script:Encoding)
+        }
+    } catch { Add-Warning ('Extension recommendations kept unchanged: ' + $_.Exception.Message) }
+    $editor = Get-Command code -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($editor) { Add-Log ('Editor CLI: ' + $editor.Source) }
+    else { Add-Warning 'VS Code CLI is not on PATH. Open the project folder in VS Code and enable LaTeX Workshop (see Extensions recommendations).' }
 }
 
 # Only collect outputs belonging to a .tex root. Never touch unrelated PDFs,
@@ -849,8 +1107,6 @@ function Invoke-ProjectCompile {
         throw ('Output blocked by file named build: ' + $script:BuildDir)
     }
     [void][IO.Directory]::CreateDirectory($script:BuildDir)
-    Move-LegacyOutputs $script:SourceDir
-    Prepare-IncludeDirectories $script:SourceDir $script:BuildDir
     $leaf = [IO.Path]::GetFileName($script:SourceFile)
     $stem = [IO.Path]::GetFileNameWithoutExtension($script:SourceFile)
     $script:PdfPath = Join-Path $script:SourceDir ($stem + '.pdf')
@@ -866,7 +1122,6 @@ function Invoke-ProjectCompile {
               '-File',$runner,'-MainFile',$script:SourceFile,'-ProjectRoot',$script:SourceDir,
               '-TeXBin',$script:DetectedBin)
     $rc = Invoke-CommandLogged $powerShell $args $script:SourceDir 'setup-compile'
-    Move-LegacyOutputs $script:SourceDir
     if ($rc -ne 0 -or -not (Test-Path -LiteralPath $cachePdf -PathType Leaf) -or
         -not (Test-Path -LiteralPath $script:PdfPath -PathType Leaf)) {
         $errorText = Find-FirstTeXError @((Join-Path $script:BuildDir ($stem + '.log')),
@@ -920,33 +1175,30 @@ function Save-FinalReport([bool]$Success, [string]$Message) {
     Add-Log ('Diagnostic report: ' + $report)
 }
 function Show-Completion([bool]$Success) {
-    if ($script:NoInteraction) { return }
-    $headline = if ($Success) { 'LaTeX - 编译成功' } else { 'LaTeX - 需要修复' }
-    $summary = $headline + "`n" + $script:Outcome + "`n`n诊断日志：" + $script:StatusLog
-    try {
-        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
-        while ($true) {
-            $answer = [System.Windows.Forms.MessageBox]::Show(
-                ($summary + "`n`n点击【是】：用记事本查看日志。`n点击【否】：手动关闭窗口。"),
-                $headline, [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                $(if ($Success) { [System.Windows.Forms.MessageBoxIcon]::Information } else { [System.Windows.Forms.MessageBoxIcon]::Warning }))
-            if ($answer -ne [System.Windows.Forms.DialogResult]::Yes) { break }
-            try { Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $script:StatusLog + '"') -ErrorAction Stop }
-            catch { Write-Host ('Open this log manually: ' + $script:StatusLog) }
-        }
-    } catch {
-        Write-Host '按 L 后回车查看日志；直接回车结束。'
+    # The entry wrapper (or BAT) owns the final Enter prompt, including binding errors.
+    Write-Host $script:Outcome
+}
+
+function Test-ProjectPermissions {
+    foreach ($directory in @($script:Workspace, (Join-Path $script:Workspace '.vscode'), $script:ReportDir)) {
+        if (Test-Path -LiteralPath $directory) {
+            $item = Get-Item -LiteralPath $directory -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "Output/config path is a file or link: $directory" }
+        } else { [void][IO.Directory]::CreateDirectory($directory) }
+        $probe = Join-Path $directory ('.latex-permission-' + [guid]::NewGuid().ToString('N'))
         try {
-            while ($true) {
-                $key = Read-Host 'L / Enter'
-                if ($key -notin @('l','L')) { break }
-                Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $script:StatusLog + '"') -ErrorAction SilentlyContinue
-            }
-        } catch { Write-Host 'Interactive input is unavailable; check the log path printed above.' }
+            [IO.File]::WriteAllText($probe, 'write', $script:Encoding)
+            [IO.File]::AppendAllText($probe, 'modify', $script:Encoding)
+            [void][IO.File]::ReadAllText($probe)
+            [IO.File]::Delete($probe)
+        } catch {
+            throw ("Project permission check failed: $directory. Close programs holding files, move to a writable folder, or rerun with -Elevate for a standard UAC request. " + $_.Exception.Message)
+        }
     }
 }
 
 $exitCode = 1
+$setupLock = $null
 try {
     $script:Stage = 'locating project directory'
     if (-not $ProjectRoot -and $env:LATEX_SETUP_PROJECT_ROOT) { $ProjectRoot = $env:LATEX_SETUP_PROJECT_ROOT }
@@ -973,10 +1225,29 @@ try {
     }
     $script:Stage = 'preparing report directory'
     Initialize-Logs
-    $script:Stage = 'scanning and diagnosing TeX installation'
-    Resolve-TeXTools $TeXBin
-    $script:Stage = 'testing isolated XeLaTeX document'
-    Test-MinimalXeLaTeX
+    $script:BuildDir = $script:ReportDir
+    Test-ProjectPermissions
+    $lockPath = Join-Path $script:Workspace '.vscode/.latex-operation.lock'
+    if ((Test-Path -LiteralPath $lockPath) -and ((Get-Item -LiteralPath $lockPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Lock file must not be a symlink.' }
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    do {
+        try { $setupLock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+        catch [IO.IOException] {
+            if ([DateTime]::UtcNow -gt $deadline) { throw 'Another build/setup/clean is running (lock timeout).' }
+            Start-Sleep -Milliseconds 150
+        }
+    } until ($null -ne $setupLock)
+    if ($Elevate) {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Use the elevation entry point before permission checks.' }
+    }
+    if (-not $ConfigureOnly -and -not $CleanOnly -and $Mode -eq 'build') {
+        $script:Stage = 'scanning and diagnosing TeX installation'
+        Resolve-TeXTools $TeXBin
+        $script:Stage = 'testing isolated XeLaTeX document'
+        Test-MinimalXeLaTeX
+    }
     if ($DiagnoseOnly) {
         $script:Stage = 'diagnostic complete'
         $script:ReportOK = $true
@@ -985,7 +1256,14 @@ try {
     } else {
         $script:Stage = 'installing permanent build runner'
         Install-PersistentBuildRunner $script:Workspace
-        if (-not $NoSettings) {
+        $projectConfig = [ordered]@{ mainFile = [IO.Path]::GetFileName($script:SourceFile); texBin = $script:DetectedBin }
+        if (-not $script:DetectedBin -and $TeXBin) { $projectConfig.texBin = $TeXBin }
+        $configPath = Join-Path $script:Workspace '.vscode/latex-project.json'
+        if (-not $projectConfig.texBin -and (Test-Path -LiteralPath $configPath)) {
+            try { $old = [IO.File]::ReadAllText($configPath) | ConvertFrom-Json; $projectConfig.texBin = $old.texBin } catch { }
+        }
+        [IO.File]::WriteAllText($configPath, (ConvertTo-Json $projectConfig), $script:Encoding)
+        if (-not $NoSettings -and -not $CleanOnly -and $Mode -eq 'build') {
             $script:Stage = 'configuring workspace VS Code'
             try {
                 Update-VSCodeConfig $script:Workspace
@@ -993,7 +1271,7 @@ try {
                 # its settings override child settings when opened as the workspace.
                 # Only adjust an existing parent .vscode, never create it unsolicited.
                 $parent = [IO.Directory]::GetParent($script:Workspace)
-                if ($null -ne $parent -and
+                if (-not $ProjectOnly -and $null -ne $parent -and
                     $parent.FullName -ne [IO.Path]::GetPathRoot($script:Workspace) -and
                     (Test-Path -LiteralPath (Join-Path $parent.FullName '.vscode') -PathType Container)) {
                     Update-VSCodeConfig $parent.FullName
@@ -1003,18 +1281,28 @@ try {
                 throw ('Failed to install permanent VS Code settings: ' + $_.Exception.Message)
             }
         }
+        $setupLock.Dispose(); $setupLock = $null
         $script:Stage = 'building source document'
-        Invoke-ProjectCompile
+        if ($ConfigureOnly -or $CleanOnly -or $Mode -ne 'build') {
+            $operation = if ($CleanOnly -or $ConfigureOnly) { 'clean' } else { $Mode }
+            $runner = Join-Path $script:Workspace '.vscode/build-latex.ps1'
+            $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+            $rc = Invoke-CommandLogged $ps @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$runner,'-ProjectRoot',$script:Workspace,'-Mode',$operation) $script:Workspace 'setup-compile'
+            if ($rc -ne 0) { throw "Operation $operation failed (exit $rc). See build/setup-compile.stdout.log." }
+        } else { Invoke-ProjectCompile }
         $script:Stage = 'finished'
         $script:ReportOK = $true
-        $script:Outcome = '初始化成功：根目录只保留最终 PDF，永久静默编译器在 .vscode/build-latex.vbs + build-latex.ps1。PDF：' + $script:PdfPath
+        $script:Outcome = '操作成功：永久静默编译器已保存在 .vscode。模式：' + $(if ($ConfigureOnly) { 'configure-only' } else { $Mode }) + '。PDF：' + $script:PdfPath
         $exitCode = 0
     }
 } catch {
     $script:Outcome = $_.Exception.Message
+    Write-Host $_.ScriptStackTrace
+    if ($script:StatusLog) { Add-Log $_.ScriptStackTrace }
     Write-Host ('[ERROR] ' + $script:Stage + ': ' + $script:Outcome)
     if ($script:StatusLog) { Add-Log ('[ERROR] ' + $script:Stage + ': ' + $script:Outcome) }
 } finally {
+    if ($null -ne $setupLock) { $setupLock.Dispose() }
     if ($script:StatusLog) {
         try { Save-FinalReport $script:ReportOK $script:Outcome }
         catch { Write-Host ('Could not write diagnostic report: ' + $_.Exception.Message) }
@@ -1023,4 +1311,32 @@ try {
     if ($script:StatusLog) { Write-Host ('Full log: ' + $script:StatusLog) }
     Show-Completion $script:ReportOK
 }
-exit $exitCode
+$script:SetupExitCode = $exitCode
+# END SETUP CORE
+}
+try {
+    if ($entryArguments -contains '-Elevate') {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            $elevatedArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath) + $entryArguments
+            if ($entryArguments -notcontains '-ProjectRoot') {
+                $elevationRoot = if ($env:LATEX_SETUP_PROJECT_ROOT) { $env:LATEX_SETUP_PROJECT_ROOT } else { $PSScriptRoot }
+                $elevatedArgs += @('-ProjectRoot', $elevationRoot)
+            }
+            if ($entryArguments -notcontains '-NoPause') { $elevatedArgs += '-NoPause' }
+            $line = (($elevatedArgs | ForEach-Object { '"' + [regex]::Replace($_, '(\\*)"', '$1$1\"').TrimEnd('\') + ('\' * (2 * ($_.Length - $_.TrimEnd('\').Length))) + '"' }) -join ' ')
+            $child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -ArgumentList $line -Verb RunAs -Wait -PassThru
+            $script:SetupExitCode = $child.ExitCode
+        } else { & $setupCore @entryArguments }
+    } else { & $setupCore @entryArguments }
+} catch {
+    Write-Host ('ERROR: ' + $_.Exception.Message)
+    $script:SetupExitCode = 1
+} finally {
+    if (-not $skipFinalPrompt) {
+        try { Write-Host 'Press Enter to close this window / 鎸?Enter 鍏抽棴绐楀彛'; [void][Console]::ReadLine() }
+        catch { Write-Host 'Interactive input unavailable. Use an interactive terminal or explicit -NoPause for automation.' }
+    }
+}
+exit $script:SetupExitCode
